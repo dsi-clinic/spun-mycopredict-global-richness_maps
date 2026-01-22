@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 # Constants
 classProperty = 'arbuscular_mycorrhizal_richness'
-df = pd.read_csv('data/20250115_arbuscular_mycorrhizal_richness_training_data.csv')#, nrows=20)
+df = pd.read_csv('data/20260122_arbuscular_mycorrhizal_richness_training_data.csv')#, nrows=20)
 
 today = datetime.date.today().strftime("%Y%m%d")
 
@@ -103,7 +103,7 @@ def run_spatial_loo_cv(buffer_size, rep):
     classifier = RandomForestRegressor()
 
     # Read in the grid search results from GEE
-    grid_search_results = pd.read_csv('output/20250115_arbuscular_mycorrhizal_richness_grid_search_results.csv')
+    grid_search_results = pd.read_csv('output/20260122_arbuscular_mycorrhizal_richness_grid_search_results.csv')
     VPS = grid_search_results['cName'][rep].split('VPS')[1].split('_')[0]
     LP = grid_search_results['cName'][rep].split('LP')[1].split('_')[0]
     # MN = grid_search_results['cName'][rep].split('MN')[1].split('_')[0]
