@@ -372,7 +372,7 @@ echo "######################################"
 echo ""
 
 run_cv "AM" \
-    "${DATA_DIR}/20250115_arbuscular_mycorrhizal_richness_training_data.csv" \
+    "${DATA_DIR}/20260122_arbuscular_mycorrhizal_richness_training_data.csv" \
     "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
     "arbuscular_mycorrhizal_richness"
 
@@ -384,7 +384,7 @@ echo "######################################"
 echo ""
 
 run_cv "EcM" \
-    "${DATA_DIR}/20250121_ectomycorrhizal_richness_training_data.csv" \
+    "${DATA_DIR}/20260122_ectomycorrhizal_richness_training_data.csv" \
     "${DATA_DIR}/filtered_randomPoints_ECM.csv" \
     "ectomycorrhizal_richness"
 

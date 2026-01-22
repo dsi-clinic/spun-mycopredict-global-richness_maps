@@ -15,7 +15,7 @@ from contextlib import contextmanager
 
 # Constants
 classProperty = 'ectomycorrhizal_richness'
-df = pd.read_csv('data/20250121_ectomycorrhizal_richness_training_data.csv')# nrows=20)
+df = pd.read_csv('data/20260122_ectomycorrhizal_richness_training_data.csv')# nrows=20)
 
 today = datetime.date.today().strftime("%Y%m%d")
 
@@ -99,7 +99,7 @@ project_vars = [
 'extraction_dna_mass',
 ]
 
-grid_search_results = pd.read_csv('output/20250121_ectomycorrhizal_richness_grid_search_results.csv')
+grid_search_results = pd.read_csv('output/20260122_ectomycorrhizal_richness_grid_search_results.csv')
 
 # Initialize LeaveOneOut and classifier
 loo = LeaveOneOut()

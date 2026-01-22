@@ -13,7 +13,7 @@ today = datetime.date.today().strftime("%Y%m%d")
 
 # Constants
 classProperty = 'ectomycorrhizal_richness'
-df = pd.read_csv('data/20250121_ectomycorrhizal_richness_training_data.csv')
+df = pd.read_csv('data/20260122_ectomycorrhizal_richness_training_data.csv')
 
 # Variables to include in the model
 envCovariateList = [
@@ -133,7 +133,7 @@ y = df[classProperty]
 
 # Train Random Forest models and calculate SHAP values
 def calculate_shap_values(rep):
-    grid_search_results = pd.read_csv('output/20250121_ectomycorrhizal_richness_grid_search_results.csv')
+    grid_search_results = pd.read_csv('output/20260122_ectomycorrhizal_richness_grid_search_results.csv')
     VPS = int(grid_search_results['cName'][rep].split('VPS')[1].split('_')[0])
     LP = int(grid_search_results['cName'][rep].split('LP')[1].split('_')[0])
 
