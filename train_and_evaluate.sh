@@ -28,8 +28,12 @@ echo "Cleaning up previous run artifacts..."
 rm -rf "${TEMP_DIR}"
 mkdir -p "${TEMP_DIR}"
 
+# Create output directory if it doesn't exist
+mkdir -p "${OUTPUT_DIR}"
+
 # Remove old grid search results to ensure fresh computation
-rm -f "${OUTPUT_DIR}"/*_grid_search_results.csv
+# Use find to avoid glob expansion errors when no files exist
+find "${OUTPUT_DIR}" -name "*_grid_search_results.csv" -type f -delete 2>/dev/null || true
 
 echo "Done."
 echo ""
