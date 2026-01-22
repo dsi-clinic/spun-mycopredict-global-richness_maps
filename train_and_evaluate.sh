@@ -93,7 +93,14 @@ from sklearn.model_selection import cross_validate
 from contextlib import contextmanager
 from functools import partial
 from itertools import product
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, make_scorer
+from sklearn.metrics import mean_absolute_error, r2_score, make_scorer
+try:
+    from sklearn.metrics import root_mean_squared_error
+except ImportError:
+    # For older sklearn versions
+    from sklearn.metrics import mean_squared_error
+    def root_mean_squared_error(y_true, y_pred):
+        return mean_squared_error(y_true, y_pred, squared=False)
 import multiprocessing
 import sys
 
@@ -236,7 +243,7 @@ def gridSearch(params, X, y, df, cv_col, nTrees=250, random_seed=42):
         cv=cv_folds,
         scoring={
             'r2': make_scorer(r2_score),
-            'rmse': make_scorer(mean_squared_error, squared=False),
+            'rmse': make_scorer(root_mean_squared_error),
             'mae': make_scorer(mean_absolute_error)
         },
         return_train_score=False,
