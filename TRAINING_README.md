@@ -126,6 +126,8 @@ The models are sorted by their performance, and you can identify the best hyperp
 - Matches nearest neighbor distance distributions between training-to-test and training-to-prediction spaces
 - Generated using `functions/generateFoldsKNNDM.R`
 
+**Performance Optimization:** The script automatically checks if spatial folds already exist in the training data (by looking for the `knndmw_CV_folds` column). If found, it skips the computationally expensive fold generation step. If not found, it generates the folds and saves them back to the training data file for future reuse. This can save several minutes per run, especially for large datasets like EcM.
+
 ### Hyperparameter Grid Search
 
 The script tests the following hyperparameter combinations:
@@ -165,6 +167,29 @@ If the script is interrupted, you can manually clean up with:
 ```bash
 rm -rf .temp_cv
 ```
+
+### Regenerating Spatial Folds
+
+If you want to force regeneration of spatial CV folds (e.g., to test different KNNDM parameters), you can:
+
+1. **Remove the column from your training data:**
+   ```bash
+   # For AM data
+   cut -d',' -f1-$(head -1 data/20260122_arbuscular_mycorrhizal_richness_training_data.csv | \
+     tr ',' '\n' | grep -n "knndmw_CV_folds" | cut -d':' -f1 | \
+     awk '{print $1-1}') data/20260122_arbuscular_mycorrhizal_richness_training_data.csv \
+     > temp.csv && mv temp.csv data/20260122_arbuscular_mycorrhizal_richness_training_data.csv
+   ```
+
+2. **Or use a Python script:**
+   ```python
+   import pandas as pd
+   df = pd.read_csv('data/20260122_arbuscular_mycorrhizal_richness_training_data.csv')
+   df = df.drop(columns=['knndmw_CV_folds'], errors='ignore')
+   df.to_csv('data/20260122_arbuscular_mycorrhizal_richness_training_data.csv', index=False)
+   ```
+
+The next run will automatically regenerate the spatial folds and save them back.
 
 ## Troubleshooting
 

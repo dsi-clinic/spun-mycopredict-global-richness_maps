@@ -66,21 +66,34 @@ run_cv() {
     local temp_training="${TEMP_DIR}/$(basename ${training_file})"
     cp "${training_file}" "${temp_training}"
 
-    echo "Step 1: Generating spatial CV folds using KNNDM..."
+    echo "Step 1: Checking for spatial CV folds..."
     echo "------------------------------------------------"
 
-    # Generate spatial folds using the R script
-    Rscript "${FUNCTIONS_DIR}/generateFoldsKNNDM.R" \
-        --path_training "${temp_training}" \
-        --ppoints "${random_points_file}" \
-        --k 10 \
-        --maxp 0.5 \
-        --clustering "hierarchical" \
-        --linkf "ward.D2" \
-        --samplesize 1000 \
-        --sampling "regular"
+    # Check if spatial folds already exist in the training data
+    if head -1 "${training_file}" | grep -q "knndmw_CV_folds"; then
+        echo "Spatial folds already exist in training data (knndmw_CV_folds column found)."
+        echo "Skipping KNNDM generation step."
+    else
+        echo "Spatial folds not found. Generating using KNNDM (this may take several minutes)..."
 
-    echo "Spatial folds generated."
+        # Generate spatial folds using the R script
+        Rscript "${FUNCTIONS_DIR}/generateFoldsKNNDM.R" \
+            --path_training "${temp_training}" \
+            --ppoints "${random_points_file}" \
+            --k 10 \
+            --maxp 0.5 \
+            --clustering "hierarchical" \
+            --linkf "ward.D2" \
+            --samplesize 1000 \
+            --sampling "regular"
+
+        echo "Spatial folds generated."
+
+        # Save the spatial folds back to the original training data for future reuse
+        echo "Saving spatial folds to original training data for future reuse..."
+        cp "${temp_training}" "${training_file}"
+        echo "Spatial folds saved to: ${training_file}"
+    fi
     echo ""
 
     echo "Step 2: Running hyperparameter grid search with cross-validation..."
