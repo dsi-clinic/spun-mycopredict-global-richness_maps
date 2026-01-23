@@ -10,6 +10,12 @@ alpha23_patches = alpha23_file["patches"]
 alpha23_ids = alpha23_file["ids"]
 alpha23_band_names = alpha23_file["band_names"]
 
+X = alpha23_patches.reshape(-1, 64)
+X_centered = X - np.mean(X, axis=0)
+_, _, Vt = np.linalg.svd(X_centered, full_matrices=False)
+X_pca = X_centered @ Vt.T
+alpha23_patches = X_pca.reshape(alpha23_patches.shape)
+
 alpha23 = pd.DataFrame(
     {"sample_id": alpha23_ids} |
     {x: alpha23_patches[:, 9, 9, i] for i, x in enumerate(alpha23_band_names)},
@@ -24,5 +30,5 @@ am_alpha = am_alpha[["sample_id"] + list(alpha23_band_names) + list(am.columns[2
 ecm_alpha = ecm.merge(alpha23, on="sample_id")
 ecm_alpha = ecm_alpha[["sample_id"] + list(alpha23_band_names) + list(ecm.columns[25:])]
 
-am_alpha.to_csv("data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv", index=False)
-ecm_alpha.to_csv("data/20260123_ectomycorrhizal_only_alphaearth_center.csv", index=False)
+am_alpha.to_csv("data/20260123_arbuscular_mycorrhizal_only_alphaearth_center_pca.csv", index=False)
+ecm_alpha.to_csv("data/20260123_ectomycorrhizal_only_alphaearth_center_pca.csv", index=False)

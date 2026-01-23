@@ -22,8 +22,8 @@ The `train_and_evaluate.sh` script is a driver script that orchestrates the comp
 The script expects the following input files to be present in the `data/` directory:
 
 1. **Training data:**
-   - `data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv` - AM fungal richness training data (AlphaEarth variables only)
-   - `data/20260123_ectomycorrhizal_only_alphaearth_center.csv` - EcM fungal richness training data (AlphaEarth variables only)
+   - `data/20260123_arbuscular_mycorrhizal_only_alphaearth_center_pca.csv` - AM fungal richness training data (AlphaEarth variables only)
+   - `data/20260123_ectomycorrhizal_only_alphaearth_center_pca.csv` - EcM fungal richness training data (AlphaEarth variables only)
 
 2. **Random prediction points (for spatial fold generation):**
    - `data/filtered_randomPoints_AMF.csv` - Random points for AM fungi
@@ -159,18 +159,18 @@ If you want to force regeneration of spatial CV folds (e.g., to test different K
 1. **Remove the column from your training data:**
    ```bash
    # For AM data
-   cut -d',' -f1-$(head -1 data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv | \
+   cut -d',' -f1-$(head -1 data/20260123_arbuscular_mycorrhizal_only_alphaearth_center_pca.csv | \
      tr ',' '\n' | grep -n "knndmw_CV_folds" | cut -d':' -f1 | \
-     awk '{print $1-1}') data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv \
-     > temp.csv && mv temp.csv data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv
+     awk '{print $1-1}') data/20260123_arbuscular_mycorrhizal_only_alphaearth_center_pca.csv \
+     > temp.csv && mv temp.csv data/20260123_arbuscular_mycorrhizal_only_alphaearth_center_pca.csv
    ```
 
 2. **Or use a Python script:**
    ```python
    import pandas as pd
-   df = pd.read_csv('data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv')
+   df = pd.read_csv('data/20260123_arbuscular_mycorrhizal_only_alphaearth_center_pca.csv')
    df = df.drop(columns=['knndmw_CV_folds'], errors='ignore')
-   df.to_csv('data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv', index=False)
+   df.to_csv('data/20260123_arbuscular_mycorrhizal_only_alphaearth_center_pca.csv', index=False)
    ```
 
 The next run will automatically regenerate the spatial folds and save them back.

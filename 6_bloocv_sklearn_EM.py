@@ -15,7 +15,7 @@ from contextlib import contextmanager
 
 # Constants
 classProperty = 'ectomycorrhizal_richness'
-df = pd.read_csv('data/20260123_ectomycorrhizal_only_alphaearth_center.csv')# nrows=20)
+df = pd.read_csv('data/20260123_ectomycorrhizal_only_alphaearth_center_pca.csv')# nrows=20)
 
 today = datetime.date.today().strftime("%Y%m%d")
 
