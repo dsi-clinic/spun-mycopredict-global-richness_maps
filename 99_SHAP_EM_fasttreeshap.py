@@ -13,7 +13,7 @@ today = datetime.date.today().strftime("%Y%m%d")
 
 # Constants
 classProperty = 'ectomycorrhizal_richness'
-df = pd.read_csv('data/20260123_ectomycorrhizal_only_alphaearth_center_pca.csv')
+df = pd.read_csv('data/20260123_ectomycorrhizal_only_alphaearth_2balls_pca.csv')
 
 # Variables to include in the model (64 AlphaEarth variables only)
 envCovariateList = [

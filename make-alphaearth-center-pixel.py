@@ -10,11 +10,21 @@ alpha23_patches = alpha23_file["patches"]
 alpha23_ids = alpha23_file["ids"]
 alpha23_band_names = alpha23_file["band_names"]
 
-X = alpha23_patches[:, 9, 9, :]
+y, x = np.ogrid[:19, :19]
+big_gaussian = np.exp(-((x-9)**2 + (y-9)**2) / (2.0*3**2))
+big_gaussian /= big_gaussian.sum()
+little_gaussian = np.exp(-((x-9)**2 + (y-9)**2) / (2.0*1**2))
+little_gaussian /= little_gaussian.sum()
+
+X = alpha23_patches.reshape(-1, 64)
 X_centered = X - np.mean(X, axis=0)
 _, _, Vt = np.linalg.svd(X_centered, full_matrices=False)
-X_pca = X_centered @ Vt.T
-alpha23_patches = X_pca
+X_pca_32 = (X_centered @ Vt[:32].T).reshape((len(alpha23_patches), 19, 19, 32))
+
+X_big = (X_pca_32 * big_gaussian[np.newaxis, :, :, np.newaxis]).sum(axis=(1,2))
+X_little = (X_pca_32 * little_gaussian[np.newaxis, :, :, np.newaxis]).sum(axis=(1,2))
+
+alpha23_patches = np.concatenate([X_big, X_little], axis=1)
 
 alpha23 = pd.DataFrame(
     {"sample_id": alpha23_ids} |
@@ -30,5 +40,5 @@ am_alpha = am_alpha[["sample_id"] + list(alpha23_band_names) + list(am.columns[2
 ecm_alpha = ecm.merge(alpha23, on="sample_id")
 ecm_alpha = ecm_alpha[["sample_id"] + list(alpha23_band_names) + list(ecm.columns[25:])]
 
-am_alpha.to_csv("data/20260123_arbuscular_mycorrhizal_only_alphaearth_center_pca.csv", index=False)
-ecm_alpha.to_csv("data/20260123_ectomycorrhizal_only_alphaearth_center_pca.csv", index=False)
+am_alpha.to_csv("data/20260123_arbuscular_mycorrhizal_only_alphaearth_2balls_pca.csv", index=False)
+ecm_alpha.to_csv("data/20260123_ectomycorrhizal_only_alphaearth_2balls_pca.csv", index=False)

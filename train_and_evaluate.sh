@@ -368,7 +368,7 @@ echo "######################################"
 echo ""
 
 run_cv "AM" \
-    "${DATA_DIR}/20260123_arbuscular_mycorrhizal_only_alphaearth_center_pca.csv" \
+    "${DATA_DIR}/20260123_arbuscular_mycorrhizal_only_alphaearth_2balls_pca.csv" \
     "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
     "arbuscular_mycorrhizal_richness"
 
@@ -380,7 +380,7 @@ echo "######################################"
 echo ""
 
 run_cv "EcM" \
-    "${DATA_DIR}/20260123_ectomycorrhizal_only_alphaearth_center_pca.csv" \
+    "${DATA_DIR}/20260123_ectomycorrhizal_only_alphaearth_2balls_pca.csv" \
     "${DATA_DIR}/filtered_randomPoints_ECM.csv" \
     "ectomycorrhizal_richness"
 
