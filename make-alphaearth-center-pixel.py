@@ -19,10 +19,10 @@ am = pd.read_csv("data/20260122_arbuscular_mycorrhizal_richness_training_data.cs
 ecm = pd.read_csv("data/20260122_ectomycorrhizal_richness_training_data.csv")
 
 am_alpha = am.merge(alpha23, on="sample_id")
-# am_alpha = am_alpha[["sample_id"] + list(alpha23_band_names) + list(am.columns[25:])]
+am_alpha = am_alpha[["sample_id"] + list(alpha23_band_names) + list(am.columns[25:])]
 
 ecm_alpha = ecm.merge(alpha23, on="sample_id")
-# ecm_alpha = ecm_alpha[["sample_id"] + list(alpha23_band_names) + list(ecm.columns[25:])]
+ecm_alpha = ecm_alpha[["sample_id"] + list(alpha23_band_names) + list(ecm.columns[25:])]
 
-am_alpha.to_csv("data/20260123_arbuscular_mycorrhizal_alphaearth_center.csv", index=False)
-ecm_alpha.to_csv("data/20260123_ectomycorrhizal_alphaearth_center.csv", index=False)
+am_alpha.to_csv("data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv", index=False)
+ecm_alpha.to_csv("data/20260123_ectomycorrhizal_only_alphaearth_center.csv", index=False)
