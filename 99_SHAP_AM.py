@@ -12,9 +12,9 @@ today = datetime.date.today().strftime("%Y%m%d")
 
 # Constants
 classProperty = 'arbuscular_mycorrhizal_richness'
-df = pd.read_csv('data/20260122_arbuscular_mycorrhizal_richness_training_data.csv')
+df = pd.read_csv('data/20260123_arbuscular_mycorrhizal_alphaearth_center.csv')
 
-# Variables to include in the model
+# Variables to include in the model (24 original + 64 AlphaEarth variables)
 envCovariateList = [
 'CGIAR_PET',
 'CHELSA_BIO_Annual_Mean_Temperature',
@@ -48,7 +48,14 @@ envCovariateList = [
 'SG_SOC_Content_005cm',
 'SG_Soil_pH_H2O_005cm',
 'plant_diversity',
-'climate_stability_index'
+'climate_stability_index',
+'A00', 'A01', 'A02', 'A03', 'A04', 'A05', 'A06', 'A07', 'A08', 'A09',
+'A10', 'A11', 'A12', 'A13', 'A14', 'A15', 'A16', 'A17', 'A18', 'A19',
+'A20', 'A21', 'A22', 'A23', 'A24', 'A25', 'A26', 'A27', 'A28', 'A29',
+'A30', 'A31', 'A32', 'A33', 'A34', 'A35', 'A36', 'A37', 'A38', 'A39',
+'A40', 'A41', 'A42', 'A43', 'A44', 'A45', 'A46', 'A47', 'A48', 'A49',
+'A50', 'A51', 'A52', 'A53', 'A54', 'A55', 'A56', 'A57', 'A58', 'A59',
+'A60', 'A61', 'A62', 'A63'
 ]
 
 # Rename variables in covariateList to increase readability
@@ -76,7 +83,20 @@ envCovariateListRenamed = [
     'SOC at 5cm',
     'Soil pH at 5cm',
     'Plant Diversity',
-    'Climate Stability Index'
+    'Climate Stability Index',
+    'AlphaEarth A00', 'AlphaEarth A01', 'AlphaEarth A02', 'AlphaEarth A03', 'AlphaEarth A04',
+    'AlphaEarth A05', 'AlphaEarth A06', 'AlphaEarth A07', 'AlphaEarth A08', 'AlphaEarth A09',
+    'AlphaEarth A10', 'AlphaEarth A11', 'AlphaEarth A12', 'AlphaEarth A13', 'AlphaEarth A14',
+    'AlphaEarth A15', 'AlphaEarth A16', 'AlphaEarth A17', 'AlphaEarth A18', 'AlphaEarth A19',
+    'AlphaEarth A20', 'AlphaEarth A21', 'AlphaEarth A22', 'AlphaEarth A23', 'AlphaEarth A24',
+    'AlphaEarth A25', 'AlphaEarth A26', 'AlphaEarth A27', 'AlphaEarth A28', 'AlphaEarth A29',
+    'AlphaEarth A30', 'AlphaEarth A31', 'AlphaEarth A32', 'AlphaEarth A33', 'AlphaEarth A34',
+    'AlphaEarth A35', 'AlphaEarth A36', 'AlphaEarth A37', 'AlphaEarth A38', 'AlphaEarth A39',
+    'AlphaEarth A40', 'AlphaEarth A41', 'AlphaEarth A42', 'AlphaEarth A43', 'AlphaEarth A44',
+    'AlphaEarth A45', 'AlphaEarth A46', 'AlphaEarth A47', 'AlphaEarth A48', 'AlphaEarth A49',
+    'AlphaEarth A50', 'AlphaEarth A51', 'AlphaEarth A52', 'AlphaEarth A53', 'AlphaEarth A54',
+    'AlphaEarth A55', 'AlphaEarth A56', 'AlphaEarth A57', 'AlphaEarth A58', 'AlphaEarth A59',
+    'AlphaEarth A60', 'AlphaEarth A61', 'AlphaEarth A62', 'AlphaEarth A63'
 ]
 
 project_vars = [

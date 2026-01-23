@@ -130,7 +130,7 @@ class_property = sys.argv[4]
 print(f"Loading training data from {training_file}...")
 df = pd.read_csv(training_file)
 
-# List of environmental covariates
+# List of environmental covariates (24 original + 64 AlphaEarth variables)
 covariateList = [
 'CGIAR_PET',
 'CHELSA_BIO_Annual_Mean_Temperature',
@@ -155,7 +155,14 @@ covariateList = [
 'SG_SOC_Content_005cm',
 'SG_Soil_pH_H2O_005cm',
 'plant_diversity',
-'climate_stability_index'
+'climate_stability_index',
+'A00', 'A01', 'A02', 'A03', 'A04', 'A05', 'A06', 'A07', 'A08', 'A09',
+'A10', 'A11', 'A12', 'A13', 'A14', 'A15', 'A16', 'A17', 'A18', 'A19',
+'A20', 'A21', 'A22', 'A23', 'A24', 'A25', 'A26', 'A27', 'A28', 'A29',
+'A30', 'A31', 'A32', 'A33', 'A34', 'A35', 'A36', 'A37', 'A38', 'A39',
+'A40', 'A41', 'A42', 'A43', 'A44', 'A45', 'A46', 'A47', 'A48', 'A49',
+'A50', 'A51', 'A52', 'A53', 'A54', 'A55', 'A56', 'A57', 'A58', 'A59',
+'A60', 'A61', 'A62', 'A63'
 ]
 
 # Project-specific variables (primers, sequencing platforms, etc.)
@@ -385,7 +392,7 @@ echo "######################################"
 echo ""
 
 run_cv "AM" \
-    "${DATA_DIR}/20260122_arbuscular_mycorrhizal_richness_training_data.csv" \
+    "${DATA_DIR}/20260123_arbuscular_mycorrhizal_alphaearth_center.csv" \
     "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
     "arbuscular_mycorrhizal_richness"
 
@@ -397,7 +404,7 @@ echo "######################################"
 echo ""
 
 run_cv "EcM" \
-    "${DATA_DIR}/20260122_ectomycorrhizal_richness_training_data.csv" \
+    "${DATA_DIR}/20260123_ectomycorrhizal_alphaearth_center.csv" \
     "${DATA_DIR}/filtered_randomPoints_ECM.csv" \
     "ectomycorrhizal_richness"
 
