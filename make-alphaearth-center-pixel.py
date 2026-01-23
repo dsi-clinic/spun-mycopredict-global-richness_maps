@@ -10,15 +10,15 @@ alpha23_patches = alpha23_file["patches"]
 alpha23_ids = alpha23_file["ids"]
 alpha23_band_names = alpha23_file["band_names"]
 
-X = alpha23_patches.reshape(-1, 64)
+X = alpha23_patches[:, 9, 9, :]
 X_centered = X - np.mean(X, axis=0)
 _, _, Vt = np.linalg.svd(X_centered, full_matrices=False)
 X_pca = X_centered @ Vt.T
-alpha23_patches = X_pca.reshape(alpha23_patches.shape)
+alpha23_patches = X_pca
 
 alpha23 = pd.DataFrame(
     {"sample_id": alpha23_ids} |
-    {x: alpha23_patches[:, 9, 9, i] for i, x in enumerate(alpha23_band_names)},
+    {x: alpha23_patches[:, i] for i, x in enumerate(alpha23_band_names)},
 )
 
 am = pd.read_csv("data/20260122_arbuscular_mycorrhizal_richness_training_data.csv")
