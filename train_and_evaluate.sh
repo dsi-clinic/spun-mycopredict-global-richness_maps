@@ -80,7 +80,7 @@ run_cv() {
         Rscript "${FUNCTIONS_DIR}/generateFoldsKNNDM.R" \
             --path_training "${temp_training}" \
             --ppoints "${random_points_file}" \
-            --k 10 \
+            --k 20 \
             --maxp 0.5 \
             --clustering "hierarchical" \
             --linkf "ward.D2" \
