@@ -389,48 +389,6 @@ run_cv "AM" \
     "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
     "arbuscular_mycorrhizal_richness"
 
-# Process Ectomycorrhizal (EcM) fungi
-echo ""
-echo "######################################"
-echo "# Ectomycorrhizal (EcM) Fungi       #"
-echo "######################################"
-echo ""
-
-run_cv "EcM" \
-    "${DATA_DIR}/20260122_ectomycorrhizal_richness_training_data.csv" \
-    "${DATA_DIR}/filtered_randomPoints_ECM.csv" \
-    "ectomycorrhizal_richness"
-
-# Print final summary
-echo ""
-echo "=================================="
-echo "All processing complete!"
-echo "=================================="
-echo ""
-echo "Results have been saved to:"
-echo ""
-
-# Find and display the results files
-for guild_type in "arbuscular_mycorrhizal" "ectomycorrhizal"; do
-    result_file="${OUTPUT_DIR}/$(date +%Y%m%d)_${guild_type}_richness_grid_search_results.csv"
-    if [ -f "${result_file}" ]; then
-        echo "  ${guild_type}: ${result_file}"
-
-        # Extract and display the best R² values
-        if command -v python &> /dev/null; then
-            python << PYEOF2
-import pandas as pd
-df = pd.read_csv("${result_file}")
-print("    Random CV  - Best R²: {:.4f} (Mean: {:.4f})".format(
-    df['Mean_R2_Random'].max(), df['Mean_R2_Random'].mean()))
-print("    Spatial CV - Best R²: {:.4f} (Mean: {:.4f})".format(
-    df['Mean_R2_Spatial'].max(), df['Mean_R2_Spatial'].mean()))
-print("")
-PYEOF2
-        fi
-    fi
-done
-
 # Clean up temporary directory
 echo "Cleaning up temporary files..."
 rm -rf "${TEMP_DIR}"
