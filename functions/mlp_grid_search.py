@@ -187,10 +187,25 @@ def evaluate_config(
             random_state=random_seed,
         )
 
+        train_missing = np.isnan(x_train)
+        val_missing = np.isnan(x_val)
+        test_missing = np.isnan(x_test)
+
+        medians = np.nanmedian(x_train, axis=0)
+        medians = np.where(np.isnan(medians), 0.0, medians)
+
+        x_train = np.where(np.isnan(x_train), medians, x_train)
+        x_val = np.where(np.isnan(x_val), medians, x_val)
+        x_test = np.where(np.isnan(x_test), medians, x_test)
+
         x_scaler = StandardScaler()
-        x_train = x_scaler.fit_transform(x_train)
-        x_val = x_scaler.transform(x_val)
-        x_test = x_scaler.transform(x_test)
+        x_train_scaled = x_scaler.fit_transform(x_train)
+        x_val_scaled = x_scaler.transform(x_val)
+        x_test_scaled = x_scaler.transform(x_test)
+
+        x_train = np.hstack([x_train_scaled, train_missing.astype(np.float32)])
+        x_val = np.hstack([x_val_scaled, val_missing.astype(np.float32)])
+        x_test = np.hstack([x_test_scaled, test_missing.astype(np.float32)])
 
         y_scaler = StandardScaler()
         y_train_scaled = y_scaler.fit_transform(y_train.reshape(-1, 1)).reshape(-1)
@@ -362,12 +377,12 @@ def main():
     else:
         print(f"Using spatial fold column: {spatial_fold_col}")
 
-    required_cols = covariateList + [class_property, "CV_Fold_Random", spatial_fold_col]
+    required_cols = [class_property, "CV_Fold_Random", spatial_fold_col]
     before_rows = len(df)
     df = df.dropna(subset=required_cols)
     dropped = before_rows - len(df)
     if dropped:
-        print(f"Dropped {dropped} rows with NaN in covariates/target/fold columns.")
+        print(f"Dropped {dropped} rows with NaN in target/fold columns.")
 
     X = df[covariateList].to_numpy()
     y = df[class_property].to_numpy()
