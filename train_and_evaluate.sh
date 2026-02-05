@@ -155,10 +155,12 @@ for guild_type in "arbuscular_mycorrhizal" "ectomycorrhizal"; do
             python << PYEOF2
 import pandas as pd
 df = pd.read_csv("${result_file}")
-print("    Random CV  - Best R²: {:.4f} (Mean: {:.4f})".format(
-    df['Mean_R2_Random'].max(), df['Mean_R2_Random'].mean()))
-print("    Spatial CV - Best R²: {:.4f} (Mean: {:.4f})".format(
-    df['Mean_R2_Spatial'].max(), df['Mean_R2_Spatial'].mean()))
+if 'Mean_R2_Random' in df.columns:
+    print("    Random CV  - Best R²: {:.4f} (Mean: {:.4f})".format(
+        df['Mean_R2_Random'].max(), df['Mean_R2_Random'].mean()))
+if 'Mean_R2_Spatial' in df.columns:
+    print("    Spatial CV - Best R²: {:.4f} (Mean: {:.4f})".format(
+        df['Mean_R2_Spatial'].max(), df['Mean_R2_Spatial'].mean()))
 print("")
 PYEOF2
         fi

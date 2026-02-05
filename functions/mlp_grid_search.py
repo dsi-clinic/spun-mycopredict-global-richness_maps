@@ -421,7 +421,8 @@ def main():
 
     results_rows = []
 
-    for cv_col in ["CV_Fold_Random", spatial_fold_col]:
+    cv_columns = [spatial_fold_col]
+    for cv_col in cv_columns:
         cv_type = "Random" if cv_col == "CV_Fold_Random" else "Spatial"
         print(f"Running {cv_type} cross-validation with column: {cv_col}")
 
@@ -445,23 +446,30 @@ def main():
     random_df = pd.DataFrame(random_results)
     spatial_df = pd.DataFrame(spatial_results)
 
-    results_df = pd.merge(random_df, spatial_df, on="cName", how="outer")
+    if len(random_df) and len(spatial_df):
+        results_df = pd.merge(random_df, spatial_df, on="cName", how="outer")
+    elif len(spatial_df):
+        results_df = spatial_df
+    else:
+        results_df = random_df
     results_df.to_csv(output_file, index=False)
 
     print(f"Grid search results saved to: {output_file}")
     print("")
     print("Summary of cross-validation results:")
     print("=" * 60)
-    print(
-        f"Random CV  - Mean R²: {results_df['Mean_R2_Random'].mean():.4f} ± "
-        f"{results_df['Mean_R2_Random'].std():.4f}"
-    )
-    print(f"             Best R²: {results_df['Mean_R2_Random'].max():.4f}")
-    print(
-        f"Spatial CV - Mean R²: {results_df['Mean_R2_Spatial'].mean():.4f} ± "
-        f"{results_df['Mean_R2_Spatial'].std():.4f}"
-    )
-    print(f"             Best R²: {results_df['Mean_R2_Spatial'].max():.4f}")
+    if "Mean_R2_Random" in results_df.columns:
+        print(
+            f"Random CV  - Mean R²: {results_df['Mean_R2_Random'].mean():.4f} ± "
+            f"{results_df['Mean_R2_Random'].std():.4f}"
+        )
+        print(f"             Best R²: {results_df['Mean_R2_Random'].max():.4f}")
+    if "Mean_R2_Spatial" in results_df.columns:
+        print(
+            f"Spatial CV - Mean R²: {results_df['Mean_R2_Spatial'].mean():.4f} ± "
+            f"{results_df['Mean_R2_Spatial'].std():.4f}"
+        )
+        print(f"             Best R²: {results_df['Mean_R2_Spatial'].max():.4f}")
     print("=" * 60)
 
 
