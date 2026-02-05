@@ -78,6 +78,7 @@ def train_one_fold(
     y_val,
     x_test,
     y_test,
+    y_scaler,
     config: MLPConfig,
     device,
     max_epochs=200,
@@ -145,7 +146,9 @@ def train_one_fold(
     model.eval()
     with torch.no_grad():
         x_test_t = torch.from_numpy(x_test.astype(np.float32)).to(device)
-        preds = model(x_test_t).cpu().numpy().reshape(-1)
+        preds_scaled = model(x_test_t).cpu().numpy().reshape(-1, 1)
+
+    preds = y_scaler.inverse_transform(preds_scaled).reshape(-1)
 
     r2 = r2_score(y_test, preds)
     rmse = root_mean_squared_error(y_test, preds)
@@ -184,18 +187,23 @@ def evaluate_config(
             random_state=random_seed,
         )
 
-        scaler = StandardScaler()
-        x_train = scaler.fit_transform(x_train)
-        x_val = scaler.transform(x_val)
-        x_test = scaler.transform(x_test)
+        x_scaler = StandardScaler()
+        x_train = x_scaler.fit_transform(x_train)
+        x_val = x_scaler.transform(x_val)
+        x_test = x_scaler.transform(x_test)
+
+        y_scaler = StandardScaler()
+        y_train_scaled = y_scaler.fit_transform(y_train.reshape(-1, 1)).reshape(-1)
+        y_val_scaled = y_scaler.transform(y_val.reshape(-1, 1)).reshape(-1)
 
         scores = train_one_fold(
             x_train,
-            y_train,
+            y_train_scaled,
             x_val,
-            y_val,
+            y_val_scaled,
             x_test,
             y_test,
+            y_scaler,
             config,
             device,
         )
