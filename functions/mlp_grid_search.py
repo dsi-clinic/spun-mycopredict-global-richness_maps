@@ -389,8 +389,8 @@ def main():
 
     param_grid = {
         "num_layers": [2, 3],
-        "hidden_dim": [128, 256],
-        "dropout": [0.3, 0.4, 0.5, 0.6],
+        "hidden_dim": [256, 384],
+        "dropout": [0.5, 0.8],
         "weight_decay": [1e-3, 1e-2],
         "learning_rate": [1e-4, 3e-4],
         "batch_size": [128],
