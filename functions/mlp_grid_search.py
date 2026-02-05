@@ -162,7 +162,8 @@ def evaluate_config(
     random_seed=42,
 ):
     set_seed(random_seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_num_threads(1)
+    device = torch.device("cpu")
 
     unique_folds = df[cv_col].unique()
     fold_scores = []
@@ -209,6 +210,29 @@ def evaluate_config(
     mae_std = float(np.std(fold_scores[:, 2]))
 
     return r2_mean, r2_std, rmse_mean, rmse_std, mae_mean, mae_std
+
+
+def _evaluate_worker(args):
+    config, X, y, df, cv_col, class_property = args
+    r2_mean, r2_std, rmse_mean, rmse_std, mae_mean, mae_std = evaluate_config(
+        config=config,
+        X=X,
+        y=y,
+        df=df,
+        cv_col=cv_col,
+    )
+    suffix = "_Random" if cv_col == "CV_Fold_Random" else "_Spatial"
+    row = {
+        f"Mean_R2{suffix}": r2_mean,
+        f"StDev_R2{suffix}": r2_std,
+        f"Mean_RMSE{suffix}": rmse_mean,
+        f"StDev_RMSE{suffix}": rmse_std,
+        f"Mean_MAE{suffix}": mae_mean,
+        f"StDev_MAE{suffix}": mae_std,
+        "cName": config_name(class_property, config),
+    }
+    print(f"  {row['cName']} ({cv_col}): R2 = {r2_mean:.4f}")
+    return row
 
 
 def config_name(class_property, config: MLPConfig):
@@ -330,6 +354,13 @@ def main():
     else:
         print(f"Using spatial fold column: {spatial_fold_col}")
 
+    required_cols = covariateList + [class_property, "CV_Fold_Random", spatial_fold_col]
+    before_rows = len(df)
+    df = df.dropna(subset=required_cols)
+    dropped = before_rows - len(df)
+    if dropped:
+        print(f"Dropped {dropped} rows with NaN in covariates/target/fold columns.")
+
     X = df[covariateList].to_numpy()
     y = df[class_property].to_numpy()
 
@@ -339,7 +370,7 @@ def main():
         "dropout": [0.0, 0.2],
         "weight_decay": [1e-4, 1e-3],
         "learning_rate": [3e-4, 1e-3],
-        "batch_size": [64, 128],
+        "batch_size": [128],
     }
 
     all_params = list(
@@ -371,28 +402,15 @@ def main():
         cv_type = "Random" if cv_col == "CV_Fold_Random" else "Spatial"
         print(f"Running {cv_type} cross-validation with column: {cv_col}")
 
-        for params in all_params:
-            config = MLPConfig(*params)
-            r2_mean, r2_std, rmse_mean, rmse_std, mae_mean, mae_std = evaluate_config(
-                config=config,
-                X=X,
-                y=y,
-                df=df,
-                cv_col=cv_col,
-            )
+        tasks = [
+            (MLPConfig(*params), X, y, df, cv_col, class_property)
+            for params in all_params
+        ]
 
-            suffix = "_Random" if cv_col == "CV_Fold_Random" else "_Spatial"
-            row = {
-                f"Mean_R2{suffix}": r2_mean,
-                f"StDev_R2{suffix}": r2_std,
-                f"Mean_RMSE{suffix}": rmse_mean,
-                f"StDev_RMSE{suffix}": rmse_std,
-                f"Mean_MAE{suffix}": mae_mean,
-                f"StDev_MAE{suffix}": mae_std,
-                "cName": config_name(class_property, config),
-            }
-            results_rows.append(row)
-            print(f"  {row['cName']} ({cv_col}): R2 = {r2_mean:.4f}")
+        n_processes = max(1, min(multiprocessing.cpu_count() - 1, 4))
+        with multiprocessing.Pool(processes=n_processes) as pool:
+            for row in pool.imap_unordered(_evaluate_worker, tasks):
+                results_rows.append(row)
 
         print("")
 
