@@ -82,7 +82,7 @@ def train_one_fold(
     config: MLPConfig,
     device,
     max_epochs=200,
-    patience=20,
+    patience=10,
 ):
     input_dim = x_train.shape[1]
     activation = nn.ReLU()
@@ -390,9 +390,9 @@ def main():
     param_grid = {
         "num_layers": [2, 3],
         "hidden_dim": [128, 256],
-        "dropout": [0.0, 0.2],
-        "weight_decay": [1e-4, 1e-3],
-        "learning_rate": [3e-4, 1e-3],
+        "dropout": [0.3, 0.4, 0.5, 0.6],
+        "weight_decay": [1e-3, 1e-2],
+        "learning_rate": [1e-4, 3e-4],
         "batch_size": [128],
     }
 
