@@ -54,10 +54,11 @@ class MLP(nn.Module):
 def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
-def make_dataloaders(x_train, y_train, x_val, y_val, batch_size):
+def make_dataloaders(x_train, y_train, x_val, y_val, batch_size, pin_memory):
     train_ds = TensorDataset(
         torch.from_numpy(x_train.astype(np.float32)),
         torch.from_numpy(y_train.astype(np.float32).reshape(-1, 1)),
@@ -66,8 +67,12 @@ def make_dataloaders(x_train, y_train, x_val, y_val, batch_size):
         torch.from_numpy(x_val.astype(np.float32)),
         torch.from_numpy(y_val.astype(np.float32).reshape(-1, 1)),
     )
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, pin_memory=pin_memory
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, pin_memory=pin_memory
+    )
     return train_loader, val_loader
 
 
@@ -102,7 +107,12 @@ def train_one_fold(
     criterion = nn.MSELoss()
 
     train_loader, val_loader = make_dataloaders(
-        x_train, y_train, x_val, y_val, config.batch_size
+        x_train,
+        y_train,
+        x_val,
+        y_val,
+        config.batch_size,
+        pin_memory=(device.type == "cuda"),
     )
 
     best_val = float("inf")
@@ -112,8 +122,8 @@ def train_one_fold(
     for _epoch in range(max_epochs):
         model.train()
         for xb, yb in train_loader:
-            xb = xb.to(device)
-            yb = yb.to(device)
+            xb = xb.to(device, non_blocking=True)
+            yb = yb.to(device, non_blocking=True)
             optimizer.zero_grad()
             preds = model(xb)
             loss = criterion(preds, yb)
@@ -124,8 +134,8 @@ def train_one_fold(
         val_losses = []
         with torch.no_grad():
             for xb, yb in val_loader:
-                xb = xb.to(device)
-                yb = yb.to(device)
+                xb = xb.to(device, non_blocking=True)
+                yb = yb.to(device, non_blocking=True)
                 preds = model(xb)
                 loss = criterion(preds, yb)
                 val_losses.append(loss.item())
@@ -145,7 +155,9 @@ def train_one_fold(
 
     model.eval()
     with torch.no_grad():
-        x_test_t = torch.from_numpy(x_test.astype(np.float32)).to(device)
+        x_test_t = torch.from_numpy(x_test.astype(np.float32)).to(
+            device, non_blocking=True
+        )
         preds_scaled = model(x_test_t).cpu().numpy().reshape(-1, 1)
 
     preds = y_scaler.inverse_transform(preds_scaled).reshape(-1)
@@ -165,8 +177,12 @@ def evaluate_config(
     random_seed=42,
 ):
     set_seed(random_seed)
-    torch.set_num_threads(1)
-    device = torch.device("cpu")
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+    if use_cuda:
+        torch.backends.cudnn.benchmark = True
+    else:
+        torch.set_num_threads(1)
 
     unique_folds = df[cv_col].unique()
     fold_scores = []
@@ -431,10 +447,14 @@ def main():
             for params in all_params
         ]
 
-        n_processes = max(1, min(multiprocessing.cpu_count() - 1, 4))
-        with multiprocessing.Pool(processes=n_processes) as pool:
-            for row in pool.imap_unordered(_evaluate_worker, tasks):
-                results_rows.append(row)
+        if torch.cuda.is_available():
+            for task in tasks:
+                results_rows.append(_evaluate_worker(task))
+        else:
+            n_processes = max(1, min(multiprocessing.cpu_count() - 1, 4))
+            with multiprocessing.Pool(processes=n_processes) as pool:
+                for row in pool.imap_unordered(_evaluate_worker, tasks):
+                    results_rows.append(row)
 
         print("")
 
