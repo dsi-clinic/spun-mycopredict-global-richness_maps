@@ -544,7 +544,7 @@ def main():
 
     results_rows = []
 
-    cv_columns = [spatial_fold_col]
+    cv_columns = ["CV_Fold_Random", spatial_fold_col]
     for cv_col in cv_columns:
         cv_type = "Random" if cv_col == "CV_Fold_Random" else "Spatial"
         print(f"Running {cv_type} cross-validation with column: {cv_col}")
