@@ -59,14 +59,19 @@ def set_seed(seed):
 
 
 def make_dataloaders(x_train, y_train, x_val, y_val, batch_size, pin_memory):
-    train_ds = TensorDataset(
-        torch.from_numpy(x_train.astype(np.float32)),
-        torch.from_numpy(y_train.astype(np.float32).reshape(-1, 1)),
-    )
-    val_ds = TensorDataset(
-        torch.from_numpy(x_val.astype(np.float32)),
-        torch.from_numpy(y_val.astype(np.float32).reshape(-1, 1)),
-    )
+    if isinstance(x_train, torch.Tensor):
+        x_train_t = x_train.float()
+        y_train_t = y_train.float().reshape(-1, 1)
+        x_val_t = x_val.float()
+        y_val_t = y_val.float().reshape(-1, 1)
+    else:
+        x_train_t = torch.from_numpy(x_train.astype(np.float32))
+        y_train_t = torch.from_numpy(y_train.astype(np.float32).reshape(-1, 1))
+        x_val_t = torch.from_numpy(x_val.astype(np.float32))
+        y_val_t = torch.from_numpy(y_val.astype(np.float32).reshape(-1, 1))
+
+    train_ds = TensorDataset(x_train_t, y_train_t)
+    val_ds = TensorDataset(x_val_t, y_val_t)
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True, pin_memory=pin_memory
     )
@@ -112,7 +117,7 @@ def train_one_fold(
         x_val,
         y_val,
         config.batch_size,
-        pin_memory=(device.type == "cuda"),
+        pin_memory=(device.type == "cuda" and not isinstance(x_train, torch.Tensor)),
     )
 
     best_val = float("inf")
@@ -155,12 +160,19 @@ def train_one_fold(
 
     model.eval()
     with torch.no_grad():
-        x_test_t = torch.from_numpy(x_test.astype(np.float32)).to(
-            device, non_blocking=True
-        )
+        if isinstance(x_test, torch.Tensor):
+            x_test_t = x_test.to(device, non_blocking=True)
+        else:
+            x_test_t = torch.from_numpy(x_test.astype(np.float32)).to(
+                device, non_blocking=True
+            )
         preds_scaled = model(x_test_t).cpu().numpy().reshape(-1, 1)
 
-    preds = y_scaler.inverse_transform(preds_scaled).reshape(-1)
+    if isinstance(y_scaler, tuple):
+        y_mean, y_scale = y_scaler
+        preds = (preds_scaled * y_scale + y_mean).reshape(-1)
+    else:
+        preds = y_scaler.inverse_transform(preds_scaled).reshape(-1)
 
     r2 = r2_score(y_test, preds)
     rmse = root_mean_squared_error(y_test, preds)
@@ -168,24 +180,9 @@ def train_one_fold(
     return r2, rmse, mae
 
 
-def evaluate_config(
-    config: MLPConfig,
-    X,
-    y,
-    df,
-    cv_col,
-    random_seed=42,
-):
-    set_seed(random_seed)
-    use_cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if use_cuda else "cpu")
-    if use_cuda:
-        torch.backends.cudnn.benchmark = True
-    else:
-        torch.set_num_threads(1)
-
+def prepare_folds(X, y, df, cv_col, random_seed=42, use_torch_preprocess=False):
     unique_folds = df[cv_col].unique()
-    fold_scores = []
+    fold_data = []
 
     for fold in unique_folds:
         train_idx = np.where(df[cv_col] != fold)[0]
@@ -203,30 +200,123 @@ def evaluate_config(
             random_state=random_seed,
         )
 
-        train_missing = np.isnan(x_train)
-        val_missing = np.isnan(x_val)
-        test_missing = np.isnan(x_test)
+        if use_torch_preprocess:
+            fold_data.append((x_train, y_train, x_val, y_val, x_test, y_test))
+        else:
+            train_missing = np.isnan(x_train)
+            val_missing = np.isnan(x_val)
+            test_missing = np.isnan(x_test)
 
-        medians = np.nanmedian(x_train, axis=0)
-        medians = np.where(np.isnan(medians), 0.0, medians)
+            medians = np.nanmedian(x_train, axis=0)
+            medians = np.where(np.isnan(medians), 0.0, medians)
 
-        x_train = np.where(np.isnan(x_train), medians, x_train)
-        x_val = np.where(np.isnan(x_val), medians, x_val)
-        x_test = np.where(np.isnan(x_test), medians, x_test)
+            x_train = np.where(np.isnan(x_train), medians, x_train)
+            x_val = np.where(np.isnan(x_val), medians, x_val)
+            x_test = np.where(np.isnan(x_test), medians, x_test)
 
-        x_scaler = StandardScaler()
-        x_train_scaled = x_scaler.fit_transform(x_train)
-        x_val_scaled = x_scaler.transform(x_val)
-        x_test_scaled = x_scaler.transform(x_test)
+            x_scaler = StandardScaler()
+            x_train_scaled = x_scaler.fit_transform(x_train)
+            x_val_scaled = x_scaler.transform(x_val)
+            x_test_scaled = x_scaler.transform(x_test)
 
-        x_train = np.hstack([x_train_scaled, train_missing.astype(np.float32)])
-        x_val = np.hstack([x_val_scaled, val_missing.astype(np.float32)])
-        x_test = np.hstack([x_test_scaled, test_missing.astype(np.float32)])
+            x_train = np.hstack([x_train_scaled, train_missing.astype(np.float32)])
+            x_val = np.hstack([x_val_scaled, val_missing.astype(np.float32)])
+            x_test = np.hstack([x_test_scaled, test_missing.astype(np.float32)])
 
-        y_scaler = StandardScaler()
-        y_train_scaled = y_scaler.fit_transform(y_train.reshape(-1, 1)).reshape(-1)
-        y_val_scaled = y_scaler.transform(y_val.reshape(-1, 1)).reshape(-1)
+            y_scaler = StandardScaler()
+            y_train_scaled = y_scaler.fit_transform(y_train.reshape(-1, 1)).reshape(-1)
+            y_val_scaled = y_scaler.transform(y_val.reshape(-1, 1)).reshape(-1)
 
+            fold_data.append(
+                (x_train, y_train_scaled, x_val, y_val_scaled, x_test, y_test, y_scaler)
+            )
+
+    return fold_data
+
+
+def _prepare_folds_torch(fold_data, device):
+    processed = []
+    for x_train, y_train, x_val, y_val, x_test, y_test in fold_data:
+        x_train_t = torch.from_numpy(x_train.astype(np.float32)).to(device)
+        x_val_t = torch.from_numpy(x_val.astype(np.float32)).to(device)
+        x_test_t = torch.from_numpy(x_test.astype(np.float32)).to(device)
+
+        train_missing = torch.isnan(x_train_t)
+        val_missing = torch.isnan(x_val_t)
+        test_missing = torch.isnan(x_test_t)
+
+        if hasattr(torch, "nanmedian"):
+            medians = torch.nanmedian(x_train_t, dim=0).values
+        else:
+            medians = torch.from_numpy(np.nanmedian(x_train, axis=0).astype(np.float32))
+            medians = medians.to(device)
+        medians = torch.where(torch.isnan(medians), torch.zeros_like(medians), medians)
+
+        x_train_t = torch.where(train_missing, medians, x_train_t)
+        x_val_t = torch.where(val_missing, medians, x_val_t)
+        x_test_t = torch.where(test_missing, medians, x_test_t)
+
+        x_mean = x_train_t.mean(dim=0)
+        x_std = x_train_t.std(dim=0, unbiased=False)
+        x_std = torch.where(x_std == 0, torch.ones_like(x_std), x_std)
+
+        x_train_scaled = (x_train_t - x_mean) / x_std
+        x_val_scaled = (x_val_t - x_mean) / x_std
+        x_test_scaled = (x_test_t - x_mean) / x_std
+
+        x_train_final = torch.cat([x_train_scaled, train_missing.float()], dim=1)
+        x_val_final = torch.cat([x_val_scaled, val_missing.float()], dim=1)
+        x_test_final = torch.cat([x_test_scaled, test_missing.float()], dim=1)
+
+        y_train_t = torch.from_numpy(y_train.astype(np.float32)).to(device)
+        y_val_t = torch.from_numpy(y_val.astype(np.float32)).to(device)
+
+        y_mean = y_train_t.mean()
+        y_std = y_train_t.std(unbiased=False)
+        if y_std == 0:
+            y_std = torch.tensor(1.0, device=device)
+
+        y_train_scaled = (y_train_t - y_mean) / y_std
+        y_val_scaled = (y_val_t - y_mean) / y_std
+
+        y_scaler = (float(y_mean.item()), float(y_std.item()))
+        processed.append(
+            (
+                x_train_final,
+                y_train_scaled,
+                x_val_final,
+                y_val_scaled,
+                x_test_final,
+                y_test,
+                y_scaler,
+            )
+        )
+    return processed
+
+
+def evaluate_config(
+    config: MLPConfig,
+    fold_data,
+    random_seed=42,
+):
+    set_seed(random_seed)
+    torch.set_num_threads(1)
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+    if use_cuda:
+        torch.backends.cudnn.benchmark = True
+
+    fold_scores = []
+
+    for (
+        x_train,
+        y_train_scaled,
+        x_val,
+        y_val_scaled,
+        x_test,
+        y_test,
+        y_scaler,
+    ) in fold_data:
         scores = train_one_fold(
             x_train,
             y_train_scaled,
@@ -251,14 +341,31 @@ def evaluate_config(
     return r2_mean, r2_std, rmse_mean, rmse_std, mae_mean, mae_std
 
 
-def _evaluate_worker(args):
-    config, X, y, df, cv_col, class_property = args
+_FOLD_DATA = None
+_CV_COL = None
+_CLASS_PROPERTY = None
+_USE_TORCH_PREPROCESS = False
+
+
+def _init_worker(fold_data, cv_col, class_property, use_torch_preprocess):
+    global _FOLD_DATA, _CV_COL, _CLASS_PROPERTY, _USE_TORCH_PREPROCESS
+    _USE_TORCH_PREPROCESS = use_torch_preprocess
+    if use_torch_preprocess:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        _FOLD_DATA = _prepare_folds_torch(fold_data, device)
+    else:
+        _FOLD_DATA = fold_data
+    _CV_COL = cv_col
+    _CLASS_PROPERTY = class_property
+
+
+def _evaluate_worker(config):
+    fold_data = _FOLD_DATA
+    cv_col = _CV_COL
+    class_property = _CLASS_PROPERTY
     r2_mean, r2_std, rmse_mean, rmse_std, mae_mean, mae_std = evaluate_config(
         config=config,
-        X=X,
-        y=y,
-        df=df,
-        cv_col=cv_col,
+        fold_data=fold_data,
     )
     suffix = "_Random" if cv_col == "CV_Fold_Random" else "_Spatial"
     row = {
@@ -442,17 +549,29 @@ def main():
         cv_type = "Random" if cv_col == "CV_Fold_Random" else "Spatial"
         print(f"Running {cv_type} cross-validation with column: {cv_col}")
 
-        tasks = [
-            (MLPConfig(*params), X, y, df, cv_col, class_property)
-            for params in all_params
-        ]
+        use_torch_preprocess = torch.cuda.is_available()
+        fold_data = prepare_folds(
+            X, y, df, cv_col, use_torch_preprocess=use_torch_preprocess
+        )
+        tasks = [MLPConfig(*params) for params in all_params]
 
         if torch.cuda.is_available():
-            for task in tasks:
-                results_rows.append(_evaluate_worker(task))
+            n_processes = min(4, len(tasks))
+            ctx = multiprocessing.get_context("spawn")
+            with ctx.Pool(
+                processes=n_processes,
+                initializer=_init_worker,
+                initargs=(fold_data, cv_col, class_property, use_torch_preprocess),
+            ) as pool:
+                for row in pool.imap_unordered(_evaluate_worker, tasks):
+                    results_rows.append(row)
         else:
             n_processes = max(1, min(multiprocessing.cpu_count() - 1, 4))
-            with multiprocessing.Pool(processes=n_processes) as pool:
+            with multiprocessing.Pool(
+                processes=n_processes,
+                initializer=_init_worker,
+                initargs=(fold_data, cv_col, class_property, use_torch_preprocess),
+            ) as pool:
                 for row in pool.imap_unordered(_evaluate_worker, tasks):
                     results_rows.append(row)
 
