@@ -511,7 +511,7 @@ def main():
     y = df[class_property].to_numpy()
 
     param_grid = {
-        "num_layers": [2, 3],
+        "num_layers": [3, 4],
         "hidden_dim": [256, 384],
         "dropout": [0.5, 0.8],
         "weight_decay": [1e-3, 1e-2],
