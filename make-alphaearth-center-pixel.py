@@ -5,40 +5,70 @@ import pandas as pd
 
 DIRECTORY = pathlib.Path("~/Box/dsi-core/11th-hour/spun/patches/").expanduser()
 
-alpha23_file = np.load(DIRECTORY / "alpha_earth_COMBINED_19x19_2023.npz")
-alpha23_patches = alpha23_file["patches"]
-alpha23_ids = alpha23_file["ids"]
-alpha23_band_names = alpha23_file["band_names"]
-
-y, x = np.ogrid[:19, :19]
-big_gaussian = np.exp(-((x-9)**2 + (y-9)**2) / (2.0*3**2))
+y, x = np.ogrid[:25, :25]
+big_gaussian = np.exp(-((x - 12) ** 2 + (y - 12) ** 2) / (2.0 * 3**2))
 big_gaussian /= big_gaussian.sum()
-little_gaussian = np.exp(-((x-9)**2 + (y-9)**2) / (2.0*1**2))
+little_gaussian = np.exp(-((x - 12) ** 2 + (y - 12) ** 2) / (2.0 * 1**2))
 little_gaussian /= little_gaussian.sum()
 
-X = alpha23_patches.reshape(-1, 64)
+am_alpha23_file = np.load(DIRECTORY / "alpha_earth_AM_25x25_2017.npz")
+am_alpha23_patches = am_alpha23_file["patches"]
+am_alpha23_ids = am_alpha23_file["ids"]
+am_alpha23_band_names = am_alpha23_file["band_names"]
+
+X = am_alpha23_patches.reshape(-1, 64)
 X_centered = X - np.mean(X, axis=0)
 _, _, Vt = np.linalg.svd(X_centered, full_matrices=False)
-X_pca_32 = (X_centered @ Vt[:32].T).reshape((len(alpha23_patches), 19, 19, 32))
+X_pca_32 = (X_centered @ Vt[:32].T).reshape((len(am_alpha23_patches), 25, 25, 32))
 
-X_big = (X_pca_32 * big_gaussian[np.newaxis, :, :, np.newaxis]).sum(axis=(1,2))
-X_little = (X_pca_32 * little_gaussian[np.newaxis, :, :, np.newaxis]).sum(axis=(1,2))
+X_big = (X_pca_32 * big_gaussian[np.newaxis, :, :, np.newaxis]).sum(axis=(1, 2))
+X_little = (X_pca_32 * little_gaussian[np.newaxis, :, :, np.newaxis]).sum(axis=(1, 2))
 
-alpha23_patches = np.concatenate([X_big, X_little], axis=1)
+am_alpha23_patches = np.concatenate([X_big, X_little], axis=1)
 
-alpha23 = pd.DataFrame(
-    {"sample_id": alpha23_ids} |
-    {x: alpha23_patches[:, i] for i, x in enumerate(alpha23_band_names)},
+am_alpha23 = pd.DataFrame(
+    {"sample_id": am_alpha23_ids}
+    | {x: am_alpha23_patches[:, i] for i, x in enumerate(am_alpha23_band_names)},
 )
 
-am = pd.read_csv("data/20260122_arbuscular_mycorrhizal_richness_training_data.csv")
-ecm = pd.read_csv("data/20260122_ectomycorrhizal_richness_training_data.csv")
+em_alpha23_file = np.load(DIRECTORY / "alpha_earth_EM_25x25_2017.npz")
+em_alpha23_patches = em_alpha23_file["patches"]
+em_alpha23_ids = em_alpha23_file["ids"]
+em_alpha23_band_names = em_alpha23_file["band_names"]
 
-am_alpha = am.merge(alpha23, on="sample_id")
-am_alpha = am_alpha[["sample_id"] + list(alpha23_band_names) + list(am.columns[25:])]
+X = em_alpha23_patches.reshape(-1, 64)
+X_centered = X - np.mean(X, axis=0)
+_, _, Vt = np.linalg.svd(X_centered, full_matrices=False)
+X_pca_32 = (X_centered @ Vt[:32].T).reshape((len(em_alpha23_patches), 25, 25, 32))
 
-ecm_alpha = ecm.merge(alpha23, on="sample_id")
-ecm_alpha = ecm_alpha[["sample_id"] + list(alpha23_band_names) + list(ecm.columns[25:])]
+X_big = (X_pca_32 * big_gaussian[np.newaxis, :, :, np.newaxis]).sum(axis=(1, 2))
+X_little = (X_pca_32 * little_gaussian[np.newaxis, :, :, np.newaxis]).sum(axis=(1, 2))
 
-am_alpha.to_csv("data/20260123_arbuscular_mycorrhizal_only_alphaearth_2balls_pca.csv", index=False)
-ecm_alpha.to_csv("data/20260123_ectomycorrhizal_only_alphaearth_2balls_pca.csv", index=False)
+em_alpha23_patches = np.concatenate([X_big, X_little], axis=1)
+
+em_alpha23 = pd.DataFrame(
+    {"sample_id": em_alpha23_ids}
+    | {x: em_alpha23_patches[:, i] for i, x in enumerate(em_alpha23_band_names)},
+)
+
+am = pd.read_csv(
+    "data/20260122_arbuscular_mycorrhizal_richness_training_data.csv"
+).merge(pd.read_csv("data/am_coordinates.csv"), on="sample_id")
+ecm = pd.read_csv("data/20260122_ectomycorrhizal_richness_training_data.csv").merge(
+    pd.read_csv("data/em_coordinates.csv"), on="sample_id"
+)
+
+am_alpha = am.merge(am_alpha23, on="sample_id")
+am_alpha = am_alpha[["sample_id"] + list(am_alpha23_band_names) + list(am.columns[25:])]
+
+ecm_alpha = ecm.merge(em_alpha23, on="sample_id")
+ecm_alpha = ecm_alpha[
+    ["sample_id"] + list(em_alpha23_band_names) + list(ecm.columns[25:])
+]
+
+am_alpha.to_csv(
+    "data/20260123_arbuscular_mycorrhizal_only_alphaearth_2balls_pca.csv", index=False
+)
+ecm_alpha.to_csv(
+    "data/20260123_ectomycorrhizal_only_alphaearth_2balls_pca.csv", index=False
+)
