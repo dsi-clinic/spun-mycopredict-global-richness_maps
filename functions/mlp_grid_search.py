@@ -5,6 +5,7 @@ import sys
 import multiprocessing
 from dataclasses import dataclass
 from itertools import product
+import random
 
 import numpy as np
 import pandas as pd
@@ -25,6 +26,10 @@ except ImportError:
         return mean_squared_error(y_true, y_pred, squared=False)
 
 
+MAX_EPOCHS = int(os.getenv("MLP_MAX_EPOCHS", "220"))
+PATIENCE = int(os.getenv("MLP_PATIENCE", "18"))
+
+
 @dataclass(frozen=True)
 class MLPConfig:
     num_layers: int
@@ -33,16 +38,25 @@ class MLPConfig:
     weight_decay: float
     learning_rate: float
     batch_size: int
+    activation: str
+    batch_norm: bool
+    optimizer: str
+    feature_set: str
+    stage: str = "search"
 
 
 class MLP(nn.Module):
-    def __init__(self, input_dim, num_layers, hidden_dim, dropout, activation):
+    def __init__(
+        self, input_dim, num_layers, hidden_dim, dropout, activation, batch_norm=False
+    ):
         super().__init__()
         layers = []
         in_dim = input_dim
         for _ in range(num_layers):
             layers.append(nn.Linear(in_dim, hidden_dim))
-            layers.append(activation)
+            if batch_norm:
+                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(activation_factory(activation))
             if dropout > 0:
                 layers.append(nn.Dropout(dropout))
             in_dim = hidden_dim
@@ -58,6 +72,20 @@ def set_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def activation_factory(name):
+    if name == "relu":
+        return nn.ReLU()
+    if name == "gelu":
+        return nn.GELU()
+    if name == "silu":
+        return nn.SiLU()
+    if name == "tanh":
+        return nn.Tanh()
+    if name == "leakyrelu":
+        return nn.LeakyReLU(negative_slope=0.1)
+    raise ValueError(f"Unsupported activation: {name}")
 
 
 def make_dataloaders(x_train, y_train, x_val, y_val, batch_size, pin_memory):
@@ -93,24 +121,31 @@ def train_one_fold(
     y_scaler,
     config: MLPConfig,
     device,
-    max_epochs=200,
-    patience=10,
+    max_epochs=300,
+    patience=20,
 ):
     input_dim = x_train.shape[1]
-    activation = nn.ReLU()
     model = MLP(
         input_dim=input_dim,
         num_layers=config.num_layers,
         hidden_dim=config.hidden_dim,
         dropout=config.dropout,
-        activation=activation,
+        activation=config.activation,
+        batch_norm=config.batch_norm,
     ).to(device)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay,
-    )
+    if config.optimizer == "adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay,
+        )
     criterion = nn.MSELoss()
 
     train_loader, val_loader = make_dataloaders(
@@ -182,8 +217,20 @@ def train_one_fold(
     return r2, rmse, mae
 
 
-def prepare_folds(X, y, df, cv_col, random_seed=42, use_torch_preprocess=False):
-    unique_folds = df[cv_col].unique()
+def prepare_folds(
+    X,
+    y,
+    df,
+    cv_col,
+    random_seed=42,
+    use_torch_preprocess=False,
+    fold_limit=0,
+    train_subsample=0,
+    val_subsample=0,
+):
+    unique_folds = sorted(df[cv_col].dropna().unique().tolist())
+    if fold_limit and fold_limit > 0:
+        unique_folds = unique_folds[:fold_limit]
     fold_data = []
 
     for fold in unique_folds:
@@ -201,6 +248,17 @@ def prepare_folds(X, y, df, cv_col, random_seed=42, use_torch_preprocess=False):
             test_size=0.15,
             random_state=random_seed,
         )
+
+        if train_subsample and train_subsample > 0 and len(x_train) > train_subsample:
+            rng = np.random.default_rng(random_seed + int(fold) + 1000)
+            idx = rng.choice(len(x_train), size=train_subsample, replace=False)
+            x_train = x_train[idx]
+            y_train = y_train[idx]
+        if val_subsample and val_subsample > 0 and len(x_val) > val_subsample:
+            rng = np.random.default_rng(random_seed + int(fold) + 2000)
+            idx = rng.choice(len(x_val), size=val_subsample, replace=False)
+            x_val = x_val[idx]
+            y_val = y_val[idx]
 
         if use_torch_preprocess:
             fold_data.append((x_train, y_train, x_val, y_val, x_test, y_test))
@@ -379,6 +437,8 @@ def evaluate_config(
             y_scaler,
             config,
             device,
+            max_epochs=MAX_EPOCHS,
+            patience=PATIENCE,
         )
         fold_scores.append(scores)
 
@@ -427,6 +487,17 @@ def _evaluate_worker(config):
         f"StDev_RMSE{suffix}": rmse_std,
         f"Mean_MAE{suffix}": mae_mean,
         f"StDev_MAE{suffix}": mae_std,
+        "feature_set": config.feature_set,
+        "num_layers": config.num_layers,
+        "hidden_dim": config.hidden_dim,
+        "dropout": config.dropout,
+        "weight_decay": config.weight_decay,
+        "learning_rate": config.learning_rate,
+        "batch_size": config.batch_size,
+        "activation": config.activation,
+        "batch_norm": config.batch_norm,
+        "optimizer": config.optimizer,
+        "stage": config.stage,
         "cName": config_name(class_property, config),
     }
     print(f"  {row['cName']} ({cv_col}): R2 = {r2_mean:.4f}")
@@ -437,8 +508,79 @@ def config_name(class_property, config: MLPConfig):
     return (
         f"{class_property}_mlp_L{config.num_layers}_H{config.hidden_dim}"
         f"_DO{config.dropout}_WD{config.weight_decay}_LR{config.learning_rate}"
-        f"_BS{config.batch_size}"
+        f"_BS{config.batch_size}_ACT{config.activation}_BN{int(config.batch_norm)}"
+        f"_OPT{config.optimizer}_{config.feature_set}"
     )
+
+
+def sample_configs_for_feature_set(feature_set, max_trials, seed):
+    param_grid = {
+        "num_layers": [1, 2, 3, 4],
+        "hidden_dim": [64, 128, 256, 384, 512, 768],
+        "dropout": [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8],
+        "weight_decay": [0.0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2],
+        "learning_rate": [3e-5, 1e-4, 3e-4, 1e-3],
+        "batch_size": [64, 128, 256],
+        "activation": ["relu", "gelu", "silu", "tanh", "leakyrelu"],
+        "batch_norm": [False, True],
+        "optimizer": ["adamw", "adam"],
+    }
+
+    all_params = list(
+        product(
+            param_grid["num_layers"],
+            param_grid["hidden_dim"],
+            param_grid["dropout"],
+            param_grid["weight_decay"],
+            param_grid["learning_rate"],
+            param_grid["batch_size"],
+            param_grid["activation"],
+            param_grid["batch_norm"],
+            param_grid["optimizer"],
+        )
+    )
+
+    anchors = [
+        (3, 512, 0.8, 1e-2, 1e-4, 128, "relu", False, "adamw"),
+        (3, 512, 0.3, 1e-4, 3e-4, 128, "relu", True, "adamw"),
+        (2, 384, 0.2, 1e-4, 3e-4, 128, "gelu", True, "adamw"),
+        (2, 256, 0.1, 1e-5, 1e-3, 128, "silu", True, "adam"),
+        (4, 512, 0.2, 1e-4, 1e-4, 64, "relu", True, "adamw"),
+    ]
+
+    rng = random.Random(seed)
+    selected = []
+    seen = set()
+    for params in anchors:
+        if params in all_params and params not in seen:
+            selected.append(params)
+            seen.add(params)
+
+    target_count = min(max_trials, len(all_params))
+    if len(selected) > target_count:
+        selected = selected[:target_count]
+        seen = set(selected)
+
+    remaining = [p for p in all_params if p not in seen]
+    rng.shuffle(remaining)
+    needed = max(0, target_count - len(selected))
+    selected.extend(remaining[:needed])
+
+    return [
+        MLPConfig(
+            num_layers=p[0],
+            hidden_dim=p[1],
+            dropout=p[2],
+            weight_decay=p[3],
+            learning_rate=p[4],
+            batch_size=p[5],
+            activation=p[6],
+            batch_norm=p[7],
+            optimizer=p[8],
+            feature_set=feature_set,
+        )
+        for p in selected
+    ]
 
 
 def main():
@@ -450,19 +592,14 @@ def main():
     print(f"Loading training data from {training_file}...")
     df = pd.read_csv(training_file)
 
-    covariateList = [f"A{i:02d}" for i in range(64)]
-    missing_covariates = [col for col in covariateList if col not in df.columns]
+    alpha_covariates = [f"A{i:02d}" for i in range(64)]
+    missing_covariates = [col for col in alpha_covariates if col not in df.columns]
     if missing_covariates:
         print(
             "ERROR: Missing expected AlphaEarth covariates in training data: "
             + ", ".join(missing_covariates)
         )
         sys.exit(1)
-
-    tps_feature_names = add_tps_features(
-        df, k=50, centers_path="data/tps_centers_k50.csv"
-    )
-    covariateList.extend(tps_feature_names)
 
     spatial_fold_col = None
     for col in ["knndmw_CV_folds", "CV_Fold_Spatial"]:
@@ -477,111 +614,202 @@ def main():
     else:
         print(f"Using spatial fold column: {spatial_fold_col}")
 
-    required_cols = [class_property, "CV_Fold_Random", spatial_fold_col]
+    required_cols = [class_property, spatial_fold_col]
     before_rows = len(df)
     df = df.dropna(subset=required_cols)
     dropped = before_rows - len(df)
     if dropped:
         print(f"Dropped {dropped} rows with NaN in target/fold columns.")
 
-    print(f"Using {len(covariateList)} AlphaEarth covariates (A00-A63).")
-    X = df[covariateList].to_numpy()
-    y = df[class_property].to_numpy()
-
-    param_grid = {
-        "num_layers": [2, 3],
-        "hidden_dim": [256, 384, 512],
-        "dropout": [0.8],
-        "weight_decay": [1e-2],
-        "learning_rate": [1e-4],
-        "batch_size": [128],
-    }
-
-    all_params = list(
-        product(
-            param_grid["num_layers"],
-            param_grid["hidden_dim"],
-            param_grid["dropout"],
-            param_grid["weight_decay"],
-            param_grid["learning_rate"],
-            param_grid["batch_size"],
+    search_seed = int(os.getenv("MLP_SEARCH_SEED", "42"))
+    trials_per_feature_set = int(os.getenv("MLP_TRIALS_PER_FEATURE_SET", "24"))
+    search_fold_limit = int(os.getenv("MLP_SEARCH_FOLD_LIMIT", "3"))
+    search_train_subsample = int(os.getenv("MLP_SEARCH_TRAIN_SUBSAMPLE", "0"))
+    search_val_subsample = int(os.getenv("MLP_SEARCH_VAL_SUBSAMPLE", "0"))
+    refine_top_n = int(os.getenv("MLP_REFINE_TOP_N", "8"))
+    n_processes = int(
+        os.getenv(
+            "MLP_SEARCH_PROCESSES",
+            str(max(1, min(multiprocessing.cpu_count() - 1, 4))),
         )
     )
+    tps_ks = [None, 10, 25, 50]
 
-    print(f"Running grid search with {len(all_params)} parameter combinations...")
+    feature_sets = [("alpha64", df.copy(), alpha_covariates.copy())]
+    for k in tps_ks:
+        if k is None:
+            continue
+        df_variant = df.copy()
+        centers_path = f"data/tps_centers_k{k}.csv"
+        tps_feature_names = add_tps_features(df_variant, k=k, centers_path=centers_path)
+        feature_sets.append(
+            (
+                f"alpha64_tps{k}",
+                df_variant,
+                alpha_covariates + tps_feature_names,
+            )
+        )
+    feature_set_map = {name: (dfv, covs) for name, dfv, covs in feature_sets}
+
     print(
-        "Testing: "
-        f"layers={param_grid['num_layers']}, "
-        f"hidden={param_grid['hidden_dim']}, "
-        f"dropout={param_grid['dropout']}, "
-        f"weight_decay={param_grid['weight_decay']}, "
-        f"lr={param_grid['learning_rate']}, "
-        f"batch_size={param_grid['batch_size']}"
+        "Running EcM spatial search with "
+        f"{trials_per_feature_set} trials per feature set, "
+        f"{len(feature_sets)} feature sets, seed={search_seed}, "
+        f"processes={n_processes}, search_fold_limit={search_fold_limit}, "
+        f"search_train_subsample={search_train_subsample}, "
+        f"search_val_subsample={search_val_subsample}, "
+        f"refine_top_n={refine_top_n}"
     )
     print("")
 
     results_rows = []
+    cv_col = spatial_fold_col
+    cv_type = "Spatial"
+    use_torch_preprocess = torch.cuda.is_available()
 
-    cv_columns = [spatial_fold_col]
-    # cv_columns = ["CV_Fold_Random", spatial_fold_col]
-    for cv_col in cv_columns:
-        cv_type = "Random" if cv_col == "CV_Fold_Random" else "Spatial"
-        print(f"Running {cv_type} cross-validation with column: {cv_col}")
+    def run_tasks(tasks, fold_data):
+        if not tasks:
+            return
+        try:
+            if torch.cuda.is_available():
+                ctx = multiprocessing.get_context("spawn")
+                with ctx.Pool(
+                    processes=min(n_processes, len(tasks)),
+                    initializer=_init_worker,
+                    initargs=(fold_data, cv_col, class_property, use_torch_preprocess),
+                ) as pool:
+                    for row in pool.imap_unordered(_evaluate_worker, tasks):
+                        results_rows.append(row)
+                        pd.DataFrame(results_rows).sort_values(
+                            "Mean_R2_Spatial", ascending=False
+                        ).to_csv(output_file, index=False)
+            else:
+                with multiprocessing.Pool(
+                    processes=min(n_processes, len(tasks)),
+                    initializer=_init_worker,
+                    initargs=(fold_data, cv_col, class_property, use_torch_preprocess),
+                ) as pool:
+                    for row in pool.imap_unordered(_evaluate_worker, tasks):
+                        results_rows.append(row)
+                        pd.DataFrame(results_rows).sort_values(
+                            "Mean_R2_Spatial", ascending=False
+                        ).to_csv(output_file, index=False)
+        except PermissionError:
+            print(
+                "  Multiprocessing unavailable in this environment; "
+                "falling back to serial evaluation."
+            )
+            _init_worker(fold_data, cv_col, class_property, use_torch_preprocess)
+            for task in tasks:
+                row = _evaluate_worker(task)
+                results_rows.append(row)
+                pd.DataFrame(results_rows).sort_values(
+                    "Mean_R2_Spatial", ascending=False
+                ).to_csv(output_file, index=False)
 
-        use_torch_preprocess = torch.cuda.is_available()
-        fold_data = prepare_folds(
-            X, y, df, cv_col, use_torch_preprocess=use_torch_preprocess
+    for i, (feature_set_name, df_variant, covariate_list) in enumerate(
+        feature_sets, start=1
+    ):
+        print(
+            f"[Search {i}/{len(feature_sets)}] Feature set: {feature_set_name} "
+            f"({len(covariate_list)} covariates)"
         )
-        tasks = [MLPConfig(*params) for params in all_params]
+        X = df_variant[covariate_list].to_numpy()
+        y = df_variant[class_property].to_numpy()
 
-        if torch.cuda.is_available():
-            n_processes = min(4, len(tasks))
-            ctx = multiprocessing.get_context("spawn")
-            with ctx.Pool(
-                processes=n_processes,
-                initializer=_init_worker,
-                initargs=(fold_data, cv_col, class_property, use_torch_preprocess),
-            ) as pool:
-                for row in pool.imap_unordered(_evaluate_worker, tasks):
-                    results_rows.append(row)
-        else:
-            n_processes = max(1, min(multiprocessing.cpu_count() - 1, 4))
-            with multiprocessing.Pool(
-                processes=n_processes,
-                initializer=_init_worker,
-                initargs=(fold_data, cv_col, class_property, use_torch_preprocess),
-            ) as pool:
-                for row in pool.imap_unordered(_evaluate_worker, tasks):
-                    results_rows.append(row)
+        tasks = sample_configs_for_feature_set(
+            feature_set=feature_set_name,
+            max_trials=trials_per_feature_set,
+            seed=search_seed + i * 1000,
+        )
+        print(
+            f"  Running {len(tasks)} model configs on {cv_type} CV ({cv_col}) "
+            f"with fold_limit={search_fold_limit}"
+        )
+        fold_data = prepare_folds(
+            X,
+            y,
+            df_variant,
+            cv_col,
+            use_torch_preprocess=use_torch_preprocess,
+            fold_limit=search_fold_limit,
+            train_subsample=search_train_subsample,
+            val_subsample=search_val_subsample,
+        )
+        run_tasks(tasks, fold_data)
 
+        if results_rows:
+            best_so_far = max(results_rows, key=lambda r: r.get("Mean_R2_Spatial", -1e9))
+            print(
+                "  Best so far: "
+                f"{best_so_far['Mean_R2_Spatial']:.4f} ({best_so_far['cName']})"
+            )
         print("")
 
-    print("Merging results from random and spatial CV...")
+    if refine_top_n > 0 and search_fold_limit > 0 and results_rows:
+        print("Starting full-fold refinement on top search candidates...")
+        search_df = pd.DataFrame(results_rows)
+        search_df = search_df[search_df["stage"] == "search"]
+        search_df = search_df.sort_values("Mean_R2_Spatial", ascending=False)
+        top_df = search_df.drop_duplicates(subset=["cName"]).head(refine_top_n)
 
-    random_results = [r for r in results_rows if "Mean_R2_Random" in r]
-    spatial_results = [r for r in results_rows if "Mean_R2_Spatial" in r]
+        for feature_set_name in top_df["feature_set"].unique():
+            df_variant, covariate_list = feature_set_map[feature_set_name]
+            X = df_variant[covariate_list].to_numpy()
+            y = df_variant[class_property].to_numpy()
+            fold_data = prepare_folds(
+                X,
+                y,
+                df_variant,
+                cv_col,
+                use_torch_preprocess=use_torch_preprocess,
+                fold_limit=0,
+                train_subsample=0,
+                val_subsample=0,
+            )
 
-    random_df = pd.DataFrame(random_results)
-    spatial_df = pd.DataFrame(spatial_results)
+            tasks = []
+            for _, row in top_df[top_df["feature_set"] == feature_set_name].iterrows():
+                tasks.append(
+                    MLPConfig(
+                        num_layers=int(row["num_layers"]),
+                        hidden_dim=int(row["hidden_dim"]),
+                        dropout=float(row["dropout"]),
+                        weight_decay=float(row["weight_decay"]),
+                        learning_rate=float(row["learning_rate"]),
+                        batch_size=int(row["batch_size"]),
+                        activation=str(row["activation"]),
+                        batch_norm=bool(row["batch_norm"]),
+                        optimizer=str(row["optimizer"]),
+                        feature_set=str(row["feature_set"]),
+                        stage="refine",
+                    )
+                )
 
-    if len(random_df) and len(spatial_df):
-        results_df = pd.merge(random_df, spatial_df, on="cName", how="outer")
-    elif len(spatial_df):
-        results_df = spatial_df
-    else:
-        results_df = random_df
+            print(
+                f"[Refine] Feature set: {feature_set_name} | "
+                f"{len(tasks)} configs | full 10-fold spatial CV"
+            )
+            run_tasks(tasks, fold_data)
+            if results_rows:
+                best_so_far = max(
+                    results_rows, key=lambda r: r.get("Mean_R2_Spatial", -1e9)
+                )
+                print(
+                    "  Best so far after refine: "
+                    f"{best_so_far['Mean_R2_Spatial']:.4f} ({best_so_far['cName']})"
+                )
+            print("")
+
+    results_df = pd.DataFrame(results_rows).sort_values(
+        "Mean_R2_Spatial", ascending=False
+    )
     results_df.to_csv(output_file, index=False)
 
     print(f"Grid search results saved to: {output_file}")
     print("")
     print("Summary of cross-validation results:")
     print("=" * 60)
-    if "Mean_R2_Random" in results_df.columns:
-        print(
-            f"Random CV  - Mean R²: {results_df['Mean_R2_Random'].mean():.4f} ± "
-            f"{results_df['Mean_R2_Random'].std():.4f}"
-        )
-        print(f"             Best R²: {results_df['Mean_R2_Random'].max():.4f}")
     if "Mean_R2_Spatial" in results_df.columns:
         print(
             f"Spatial CV - Mean R²: {results_df['Mean_R2_Spatial'].mean():.4f} ± "
