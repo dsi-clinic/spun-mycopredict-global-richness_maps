@@ -398,94 +398,14 @@ def main():
     print(f"Loading training data from {training_file}...")
     df = pd.read_csv(training_file)
 
-    covariateList = [
-        "CGIAR_PET",
-        "CHELSA_BIO_Annual_Mean_Temperature",
-        "CHELSA_BIO_Annual_Precipitation",
-        "CHELSA_BIO_Max_Temperature_of_Warmest_Month",
-        "CHELSA_BIO_Precipitation_Seasonality",
-        "ConsensusLandCover_Human_Development_Percentage",
-        "EarthEnvTexture_CoOfVar_EVI",
-        "EarthEnvTexture_Correlation_EVI",
-        "EarthEnvTexture_Homogeneity_EVI",
-        "EarthEnvTopoMed_AspectCosine",
-        "EarthEnvTopoMed_AspectSine",
-        "EarthEnvTopoMed_Elevation",
-        "EarthEnvTopoMed_Slope",
-        "EarthEnvTopoMed_TopoPositionIndex",
-        "EsaCci_BurntAreasProbability",
-        "GHS_Population_Density",
-        "GlobBiomass_AboveGroundBiomass",
-        "MODIS_NPP",
-        "SG_Depth_to_bedrock",
-        "SG_Sand_Content_005cm",
-        "SG_SOC_Content_005cm",
-        "SG_Soil_pH_H2O_005cm",
-        "plant_diversity",
-        "climate_stability_index",
-    ]
-
-    if guild == "AM":
-        project_vars = [
-            "sequencing_platform454Roche",
-            "sequencing_platformIllumina",
-            "sample_typerhizosphere_soil",
-            "sample_typesoil",
-            "sample_typetopsoil",
-            "primersAML1_AML2_then_AMV4_5NF_AMDGR",
-            "primersAML1_AML2_then_NS31_AM1",
-            "primersAML1_AML2_then_nu_SSU_0595_5__nu_SSU_0948_3_",
-            "primersAMV4_5F_AMDGR",
-            "primersAMV4_5NF_AMDGR",
-            "primersGeoA2_AML2_then_NS31_AMDGR",
-            "primersGeoA2_NS4_then_NS31_AML2",
-            "primersGlomerWT0_Glomer1536_then_NS31_AM1A_and_GlomerWT0_Glomer1536_then_NS31_AM1B",
-            "primersGlomerWT0_Glomer1536_then_NS31_AM1A__GlomerWT0_Glomer1536_then_NS31_AM1B",
-            "primersNS1_NS4_then_AML1_AML2",
-            "primersNS1_NS4_then_AMV4_5NF_AMDGR",
-            "primersNS1_NS4_then_NS31_AM1",
-            "primersNS1_NS41_then_AML1_AML2",
-            "primersNS31_AM1",
-            "primersNS31_AML2",
-            "primersWANDA_AML2",
-            "area_sampled",
-            "extraction_dna_mass",
-        ]
-    else:
-        project_vars = [
-            "sequencing_platform454Roche",
-            "sequencing_platformIllumina",
-            "sequencing_platformIonTorrent",
-            "sequencing_platformPacBio",
-            "sample_typerhizosphere_soil",
-            "sample_typesoil",
-            "sample_typetopsoil",
-            "primers5_8S_Fun_ITS4_Fun",
-            "primersfITS7_ITS4",
-            "primersfITS9_ITS4",
-            "primersgITS7_ITS4",
-            "primersgITS7_ITS4_then_ITS9_ITS4",
-            "primersgITS7_ITS4_ITS4arch",
-            "primersgITS7_ITS4m",
-            "primersgITS7_ITS4ngs",
-            "primersgITS7ngs_ITS4ngsUni",
-            "primersITS_S2F___ITS3_mixed_1_1_ITS4",
-            "primersITS1_ITS4",
-            "primersITS1F_ITS4",
-            "primersITS1F_ITS4_then_fITS7_ITS4",
-            "primersITS1F_ITS4_then_ITS3_ITS4",
-            "primersITS1ngs_ITS4ngs_or_ITS1Fngs_ITS4ngs",
-            "primersITS3_KYO2_ITS4",
-            "primersITS3_ITS4",
-            "primersITS3ngs1_to_5___ITS3ngs10_ITS4ngs",
-            "primersITS3ngs1_to_ITS3ngs11_ITS4ngs",
-            "primersITS86F_ITS4",
-            "primersITS9MUNngs_ITS4ngsUni",
-            "area_sampled",
-            "extraction_dna_mass",
-        ]
-
-    covariateList = covariateList + project_vars
+    covariateList = [f"A{i:02d}" for i in range(64)]
+    missing_covariates = [col for col in covariateList if col not in df.columns]
+    if missing_covariates:
+        print(
+            "ERROR: Missing expected AlphaEarth covariates in training data: "
+            + ", ".join(missing_covariates)
+        )
+        sys.exit(1)
 
     spatial_fold_col = None
     for col in ["knndmw_CV_folds", "CV_Fold_Spatial"]:
@@ -507,6 +427,7 @@ def main():
     if dropped:
         print(f"Dropped {dropped} rows with NaN in target/fold columns.")
 
+    print(f"Using {len(covariateList)} AlphaEarth covariates (A00-A63).")
     X = df[covariateList].to_numpy()
     y = df[class_property].to_numpy()
 
