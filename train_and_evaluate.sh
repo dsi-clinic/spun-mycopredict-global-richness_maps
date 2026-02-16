@@ -111,17 +111,17 @@ run_cv() {
     echo ""
 }
 
-# Process Arbuscular Mycorrhizal (AM) fungi
-echo ""
-echo "######################################"
-echo "# Arbuscular Mycorrhizal (AM) Fungi #"
-echo "######################################"
-echo ""
+# # Process Arbuscular Mycorrhizal (AM) fungi
+# echo ""
+# echo "######################################"
+# echo "# Arbuscular Mycorrhizal (AM) Fungi #"
+# echo "######################################"
+# echo ""
 
-run_cv "AM" \
-    "${DATA_DIR}/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv" \
-    "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
-    "arbuscular_mycorrhizal_richness"
+# run_cv "AM" \
+#     "${DATA_DIR}/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv" \
+#     "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
+#     "arbuscular_mycorrhizal_richness"
 
 # Process Ectomycorrhizal (EcM) fungi
 echo ""
