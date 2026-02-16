@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import datetime
+import os
 import sys
 import multiprocessing
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from itertools import product
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.cluster import KMeans
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -234,6 +236,56 @@ def prepare_folds(X, y, df, cv_col, random_seed=42, use_torch_preprocess=False):
     return fold_data
 
 
+def load_or_create_tps_centers(df, k, centers_path):
+    if os.path.exists(centers_path):
+        centers_df = pd.read_csv(centers_path, usecols=["Pixel_Lat", "Pixel_Long"])
+        centers = centers_df[["Pixel_Lat", "Pixel_Long"]].to_numpy()
+        if len(centers) != k:
+            raise ValueError(
+                f"Expected {k} TPS centers in {centers_path}, found {len(centers)}."
+            )
+        return centers
+
+    coords = df[["Pixel_Lat", "Pixel_Long"]].dropna().to_numpy()
+    kmeans = KMeans(n_clusters=k, random_state=0, n_init=10)
+    kmeans.fit(coords)
+    centers = kmeans.cluster_centers_
+    pd.DataFrame(centers, columns=["Pixel_Lat", "Pixel_Long"]).to_csv(
+        centers_path, index=False
+    )
+    print(f"Saved TPS centers to {centers_path}")
+    return centers
+
+
+def add_tps_features(df, k, centers_path):
+    if "Pixel_Lat" not in df.columns or "Pixel_Long" not in df.columns:
+        print("WARNING: Pixel_Lat/Pixel_Long missing; skipping TPS features.")
+        return []
+
+    centers = load_or_create_tps_centers(df, k, centers_path)
+    coords = np.deg2rad(df[["Pixel_Lat", "Pixel_Long"]].to_numpy())
+    centers_rad = np.deg2rad(centers)
+
+    lat = coords[:, 0][:, None]
+    lon = coords[:, 1][:, None]
+    clat = centers_rad[:, 0][None, :]
+    clon = centers_rad[:, 1][None, :]
+
+    dlat = clat - lat
+    dlon = clon - lon
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat) * np.cos(clat) * np.sin(dlon / 2.0) ** 2
+    c = 2.0 * np.arcsin(np.sqrt(a))
+    r = 6371.0 * c
+    phi = r**2 * np.log(r + 1e-6)
+
+    feature_names = []
+    for i in range(k):
+        name = f"spatial_tps_{i:02d}"
+        df[name] = phi[:, i]
+        feature_names.append(name)
+    return feature_names
+
+
 def _prepare_folds_torch(fold_data, device):
     processed = []
     for x_train, y_train, x_val, y_val, x_test, y_test in fold_data:
@@ -406,6 +458,11 @@ def main():
             + ", ".join(missing_covariates)
         )
         sys.exit(1)
+
+    tps_feature_names = add_tps_features(
+        df, k=50, centers_path="data/tps_centers_k50.csv"
+    )
+    covariateList.extend(tps_feature_names)
 
     spatial_fold_col = None
     for col in ["knndmw_CV_folds", "CV_Fold_Spatial"]:
