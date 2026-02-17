@@ -45,6 +45,7 @@ def activation_factory(name):
 
 @dataclass(frozen=True)
 class ModelConfig:
+    env_arch: str  # "residual" or "plain"
     env_width: int
     env_depth: int
     env_dropout: float
@@ -60,6 +61,9 @@ class ModelConfig:
     huber_delta: float
     huber_mix: float
     alpha_l2: float
+    add_missing_indicators: bool
+    val_strategy: str  # "spatial" or "random"
+    y_transform: str  # "none" or "log1p"
     max_epochs: int
     patience: int
 
@@ -96,16 +100,44 @@ class ResidualTower(nn.Module):
         return self.head(h)
 
 
+class PlainTower(nn.Module):
+    def __init__(self, input_dim, width, depth, dropout, activation):
+        super().__init__()
+        layers = []
+        in_dim = input_dim
+        for _ in range(depth):
+            layers.append(nn.Linear(in_dim, width))
+            layers.append(nn.BatchNorm1d(width))
+            layers.append(activation_factory(activation))
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            in_dim = width
+        layers.append(nn.Linear(in_dim, 1))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class SpatialCorrectionNet(nn.Module):
     def __init__(self, env_dim, spatial_dim, config: ModelConfig):
         super().__init__()
-        self.env_tower = ResidualTower(
-            input_dim=env_dim,
-            width=config.env_width,
-            depth=config.env_depth,
-            dropout=config.env_dropout,
-            activation=config.activation,
-        )
+        if config.env_arch == "plain":
+            self.env_tower = PlainTower(
+                input_dim=env_dim,
+                width=config.env_width,
+                depth=config.env_depth,
+                dropout=config.env_dropout,
+                activation=config.activation,
+            )
+        else:
+            self.env_tower = ResidualTower(
+                input_dim=env_dim,
+                width=config.env_width,
+                depth=config.env_depth,
+                dropout=config.env_dropout,
+                activation=config.activation,
+            )
         self.use_spatial = spatial_dim > 0
         if self.use_spatial:
             self.spatial_tower = ResidualTower(
@@ -191,7 +223,12 @@ def build_feature_matrices(df, config: ModelConfig):
     if missing:
         raise ValueError("Missing AlphaEarth columns: " + ", ".join(missing))
 
-    X_env = df[env_cols].to_numpy(dtype=np.float32)
+    X_env_raw = df[env_cols].to_numpy(dtype=np.float32)
+    if config.add_missing_indicators:
+        miss = np.isnan(X_env_raw).astype(np.float32)
+        X_env = np.concatenate([X_env_raw, miss], axis=1)
+    else:
+        X_env = X_env_raw
 
     if config.spatial_mode == "none":
         X_spatial = np.zeros((len(df), 0), dtype=np.float32)
@@ -212,7 +249,7 @@ def choose_spatial_val_fold(all_folds, test_fold):
     return ordered[val_idx]
 
 
-def preprocess_fold(X_env, X_spatial, y, train_idx, val_idx, test_idx):
+def preprocess_fold(X_env, X_spatial, y, train_idx, val_idx, test_idx, y_transform):
     x_env_train = X_env[train_idx]
     x_env_val = X_env[val_idx]
     x_env_test = X_env[test_idx]
@@ -224,6 +261,10 @@ def preprocess_fold(X_env, X_spatial, y, train_idx, val_idx, test_idx):
     y_train = y[train_idx]
     y_val = y[val_idx]
     y_test = y[test_idx]
+
+    if y_transform == "log1p":
+        y_train = np.log1p(np.clip(y_train, a_min=0.0, a_max=None))
+        y_val = np.log1p(np.clip(y_val, a_min=0.0, a_max=None))
 
     # Impute missing using training medians.
     med = np.nanmedian(x_env_train, axis=0)
@@ -261,7 +302,7 @@ def preprocess_fold(X_env, X_spatial, y, train_idx, val_idx, test_idx):
     )
 
 
-def make_fold_data(df, y, X_env, X_spatial, cv_col, fold_limit=0):
+def make_fold_data(df, y, X_env, X_spatial, cv_col, config: ModelConfig, fold_limit=0):
     all_folds = sorted(df[cv_col].dropna().unique().tolist())
     eval_folds = all_folds
     if fold_limit and fold_limit > 0:
@@ -269,13 +310,23 @@ def make_fold_data(df, y, X_env, X_spatial, cv_col, fold_limit=0):
 
     fold_data = []
     for test_fold in eval_folds:
-        val_fold = choose_spatial_val_fold(all_folds, test_fold)
-        train_idx = np.where((df[cv_col] != test_fold) & (df[cv_col] != val_fold))[0]
-        val_idx = np.where(df[cv_col] == val_fold)[0]
+        if config.val_strategy == "spatial":
+            val_fold = choose_spatial_val_fold(all_folds, test_fold)
+            train_idx = np.where((df[cv_col] != test_fold) & (df[cv_col] != val_fold))[0]
+            val_idx = np.where(df[cv_col] == val_fold)[0]
+        else:
+            train_pool = np.where(df[cv_col] != test_fold)[0]
+            rng = np.random.default_rng(1000 + int(test_fold))
+            n_val = max(1, int(0.15 * len(train_pool)))
+            val_idx = rng.choice(train_pool, size=n_val, replace=False)
+            mask = np.ones(len(train_pool), dtype=bool)
+            # map chosen values back to mask
+            val_set = set(val_idx.tolist())
+            train_idx = np.array([idx for idx in train_pool if idx not in val_set], dtype=int)
         test_idx = np.where(df[cv_col] == test_fold)[0]
 
         fold_data.append(
-            preprocess_fold(X_env, X_spatial, y, train_idx, val_idx, test_idx)
+            preprocess_fold(X_env, X_spatial, y, train_idx, val_idx, test_idx, config.y_transform)
         )
     return fold_data
 
@@ -294,19 +345,25 @@ def train_one_fold(fold, config: ModelConfig, device):
         y_scaler,
     ) = fold
 
-    x_env_train_t = torch.from_numpy(x_env_train).to(device)
-    x_sp_train_t = torch.from_numpy(x_sp_train).to(device)
-    y_train_t = torch.from_numpy(y_train).reshape(-1, 1).to(device)
+    x_env_train_t = torch.from_numpy(x_env_train)
+    x_sp_train_t = torch.from_numpy(x_sp_train)
+    y_train_t = torch.from_numpy(y_train).reshape(-1, 1)
 
-    x_env_val_t = torch.from_numpy(x_env_val).to(device)
-    x_sp_val_t = torch.from_numpy(x_sp_val).to(device)
-    y_val_t = torch.from_numpy(y_val).reshape(-1, 1).to(device)
+    x_env_val_t = torch.from_numpy(x_env_val).to(device, non_blocking=True)
+    x_sp_val_t = torch.from_numpy(x_sp_val).to(device, non_blocking=True)
+    y_val_t = torch.from_numpy(y_val).reshape(-1, 1).to(device, non_blocking=True)
 
-    x_env_test_t = torch.from_numpy(x_env_test).to(device)
-    x_sp_test_t = torch.from_numpy(x_sp_test).to(device)
+    x_env_test_t = torch.from_numpy(x_env_test).to(device, non_blocking=True)
+    x_sp_test_t = torch.from_numpy(x_sp_test).to(device, non_blocking=True)
 
     train_ds = TensorDataset(x_env_train_t, x_sp_train_t, y_train_t)
-    train_loader = DataLoader(train_ds, batch_size=config.batch_size, shuffle=True)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=config.batch_size,
+        shuffle=True,
+        pin_memory=(device.type == "cuda"),
+        num_workers=0,
+    )
 
     model = SpatialCorrectionNet(
         env_dim=x_env_train.shape[1],
@@ -319,6 +376,8 @@ def train_one_fold(fold, config: ModelConfig, device):
     )
     mse_loss = nn.MSELoss()
     huber_loss = nn.HuberLoss(delta=config.huber_delta)
+    use_amp = device.type == "cuda"
+    scaler = torch.amp.GradScaler(enabled=use_amp)
 
     best_val = float("inf")
     best_state = None
@@ -327,24 +386,32 @@ def train_one_fold(fold, config: ModelConfig, device):
     for _ in range(config.max_epochs):
         model.train()
         for be, bs, by in train_loader:
+            be = be.to(device, non_blocking=True)
+            bs = bs.to(device, non_blocking=True)
+            by = by.to(device, non_blocking=True)
             optimizer.zero_grad()
-            _, _, pred = model(be, bs)
-            loss_h = huber_loss(pred, by)
-            loss_m = mse_loss(pred, by)
-            loss = config.huber_mix * loss_h + (1.0 - config.huber_mix) * loss_m
-            if model.raw_alpha is not None and config.alpha_l2 > 0:
-                loss = loss + config.alpha_l2 * model.alpha().pow(2)
-            loss.backward()
-            optimizer.step()
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
+                _, _, pred = model(be, bs)
+                loss_h = huber_loss(pred, by)
+                loss_m = mse_loss(pred, by)
+                loss = config.huber_mix * loss_h + (1.0 - config.huber_mix) * loss_m
+                if model.raw_alpha is not None and config.alpha_l2 > 0:
+                    loss = loss + config.alpha_l2 * model.alpha().pow(2)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
         model.eval()
         with torch.no_grad():
-            _, _, val_pred = model(x_env_val_t, x_sp_val_t)
-            val_h = huber_loss(val_pred, y_val_t)
-            val_m = mse_loss(val_pred, y_val_t)
-            val_loss = float((config.huber_mix * val_h + (1.0 - config.huber_mix) * val_m).item())
-            if model.raw_alpha is not None and config.alpha_l2 > 0:
-                val_loss += float(config.alpha_l2 * model.alpha().pow(2).item())
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
+                _, _, val_pred = model(x_env_val_t, x_sp_val_t)
+                val_h = huber_loss(val_pred, y_val_t)
+                val_m = mse_loss(val_pred, y_val_t)
+                val_loss = float(
+                    (config.huber_mix * val_h + (1.0 - config.huber_mix) * val_m).item()
+                )
+                if model.raw_alpha is not None and config.alpha_l2 > 0:
+                    val_loss += float(config.alpha_l2 * model.alpha().pow(2).item())
 
         if val_loss < best_val - 1e-6:
             best_val = val_loss
@@ -360,10 +427,13 @@ def train_one_fold(fold, config: ModelConfig, device):
 
     model.eval()
     with torch.no_grad():
-        _, _, pred_scaled = model(x_env_test_t, x_sp_test_t)
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
+            _, _, pred_scaled = model(x_env_test_t, x_sp_test_t)
 
     pred_scaled = pred_scaled.detach().cpu().numpy().reshape(-1, 1)
     pred = y_scaler.inverse_transform(pred_scaled).reshape(-1)
+    if config.y_transform == "log1p":
+        pred = np.expm1(pred)
 
     r2 = r2_score(y_test, pred)
     rmse = root_mean_squared_error(y_test, pred)
@@ -372,10 +442,7 @@ def train_one_fold(fold, config: ModelConfig, device):
     return r2, rmse, mae, alpha_value
 
 
-def evaluate_config(df, y, X_env, X_spatial, cv_col, config: ModelConfig, fold_limit=0):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    fold_data = make_fold_data(df, y, X_env, X_spatial, cv_col, fold_limit=fold_limit)
-
+def evaluate_config_on_folds(fold_data, config: ModelConfig, device):
     scores = []
     alpha_values = []
     for fold in fold_data:
@@ -397,15 +464,17 @@ def evaluate_config(df, y, X_env, X_spatial, cv_col, config: ModelConfig, fold_l
 
 def config_name(class_property, c: ModelConfig):
     return (
-        f"{class_property}_spatialnet_EW{c.env_width}_ED{c.env_depth}_EDO{c.env_dropout}"
+        f"{class_property}_spatialnet_EA{c.env_arch}_EW{c.env_width}_ED{c.env_depth}_EDO{c.env_dropout}"
         f"_SM{c.spatial_mode}_K{c.spatial_k}_SW{c.spatial_width}_SD{c.spatial_depth}"
         f"_SDO{c.spatial_dropout}_ACT{c.activation}_LR{c.learning_rate}_WD{c.weight_decay}"
         f"_BS{c.batch_size}_HM{c.huber_mix}_HD{c.huber_delta}_AL2{c.alpha_l2}"
+        f"_MI{int(c.add_missing_indicators)}_VAL{c.val_strategy}_YT{c.y_transform}"
     )
 
 
 def build_search_configs(max_trials):
     grid = {
+        "env_arch": ["residual", "plain"],
         "env_width": [192, 256, 384],
         "env_depth": [1, 2, 3],
         "env_dropout": [0.1, 0.2, 0.3],
@@ -421,10 +490,14 @@ def build_search_configs(max_trials):
         "huber_delta": [1.0, 1.5],
         "huber_mix": [0.6, 0.8],
         "alpha_l2": [0.01, 0.05, 0.1],
+        "add_missing_indicators": [False, True],
+        "val_strategy": ["spatial", "random"],
+        "y_transform": ["none", "log1p"],
     }
 
     all_cfgs = []
     for values in product(
+        grid["env_arch"],
         grid["env_width"],
         grid["env_depth"],
         grid["env_dropout"],
@@ -440,8 +513,12 @@ def build_search_configs(max_trials):
         grid["huber_delta"],
         grid["huber_mix"],
         grid["alpha_l2"],
+        grid["add_missing_indicators"],
+        grid["val_strategy"],
+        grid["y_transform"],
     ):
         (
+            env_arch,
             env_width,
             env_depth,
             env_dropout,
@@ -457,6 +534,9 @@ def build_search_configs(max_trials):
             huber_delta,
             huber_mix,
             alpha_l2,
+            add_missing_indicators,
+            val_strategy,
+            y_transform,
         ) = values
 
         if spatial_mode == "none":
@@ -468,6 +548,7 @@ def build_search_configs(max_trials):
 
         all_cfgs.append(
             ModelConfig(
+                env_arch=env_arch,
                 env_width=env_width,
                 env_depth=env_depth,
                 env_dropout=env_dropout,
@@ -483,16 +564,19 @@ def build_search_configs(max_trials):
                 huber_delta=huber_delta,
                 huber_mix=huber_mix,
                 alpha_l2=alpha_l2,
+                add_missing_indicators=add_missing_indicators,
+                val_strategy=val_strategy,
+                y_transform=y_transform,
                 max_epochs=int(os.getenv("SPATIALNET_MAX_EPOCHS", "180")),
                 patience=int(os.getenv("SPATIALNET_PATIENCE", "15")),
             )
         )
 
     anchors = [
-        ModelConfig(256, 2, 0.2, "none", 0, 32, 1, 0.0, "gelu", 3e-4, 1e-4, 128, 1.0, 0.8, 0.05, int(os.getenv("SPATIALNET_MAX_EPOCHS", "180")), int(os.getenv("SPATIALNET_PATIENCE", "15"))),
-        ModelConfig(384, 2, 0.2, "none", 0, 32, 1, 0.0, "silu", 3e-4, 1e-4, 128, 1.5, 0.8, 0.05, int(os.getenv("SPATIALNET_MAX_EPOCHS", "180")), int(os.getenv("SPATIALNET_PATIENCE", "15"))),
-        ModelConfig(256, 2, 0.2, "rbf", 8, 32, 1, 0.0, "gelu", 3e-4, 1e-4, 128, 1.0, 0.8, 0.1, int(os.getenv("SPATIALNET_MAX_EPOCHS", "180")), int(os.getenv("SPATIALNET_PATIENCE", "15"))),
-        ModelConfig(256, 2, 0.2, "rbf", 16, 64, 1, 0.1, "silu", 1e-4, 1e-4, 128, 1.5, 0.8, 0.1, int(os.getenv("SPATIALNET_MAX_EPOCHS", "180")), int(os.getenv("SPATIALNET_PATIENCE", "15"))),
+        ModelConfig("plain", 256, 2, 0.2, "none", 0, 32, 1, 0.0, "gelu", 3e-4, 1e-4, 128, 1.0, 0.8, 0.05, True, "random", "none", int(os.getenv("SPATIALNET_MAX_EPOCHS", "180")), int(os.getenv("SPATIALNET_PATIENCE", "15"))),
+        ModelConfig("plain", 384, 2, 0.2, "none", 0, 32, 1, 0.0, "silu", 3e-4, 1e-4, 128, 1.5, 0.8, 0.05, True, "random", "log1p", int(os.getenv("SPATIALNET_MAX_EPOCHS", "180")), int(os.getenv("SPATIALNET_PATIENCE", "15"))),
+        ModelConfig("residual", 256, 2, 0.2, "rbf", 8, 32, 1, 0.0, "gelu", 3e-4, 1e-4, 128, 1.0, 0.8, 0.1, True, "random", "none", int(os.getenv("SPATIALNET_MAX_EPOCHS", "180")), int(os.getenv("SPATIALNET_PATIENCE", "15"))),
+        ModelConfig("plain", 256, 2, 0.2, "rbf", 16, 64, 1, 0.1, "silu", 1e-4, 1e-4, 128, 1.5, 0.8, 0.1, True, "random", "log1p", int(os.getenv("SPATIALNET_MAX_EPOCHS", "180")), int(os.getenv("SPATIALNET_PATIENCE", "15"))),
     ]
 
     seen = set()
@@ -500,6 +584,7 @@ def build_search_configs(max_trials):
 
     def key(c):
         return (
+            c.env_arch,
             c.env_width,
             c.env_depth,
             c.env_dropout,
@@ -515,6 +600,9 @@ def build_search_configs(max_trials):
             c.huber_delta,
             c.huber_mix,
             c.alpha_l2,
+            c.add_missing_indicators,
+            c.val_strategy,
+            c.y_transform,
         )
 
     for c in anchors:
@@ -552,6 +640,8 @@ def main():
         return
 
     set_seed(int(os.getenv("SPATIALNET_SEED", "42")))
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
 
     df = pd.read_csv(training_file)
 
@@ -576,30 +666,31 @@ def main():
     max_trials = int(os.getenv("SPATIALNET_MAX_TRIALS", "24"))
     fold_limit = int(os.getenv("SPATIALNET_FOLD_LIMIT", "0"))
     configs = build_search_configs(max_trials=max_trials)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(
         f"Running spatial-only model search: trials={len(configs)}, "
-        f"fold_limit={fold_limit}, fold_col={spatial_fold_col}"
+        f"fold_limit={fold_limit}, fold_col={spatial_fold_col}, device={device}"
     )
 
+    fold_cache = {}
     rows = []
     for i, cfg in enumerate(configs, start=1):
-        X_env, X_spatial = build_feature_matrices(df, cfg)
-        metrics = evaluate_config(
-            df=df,
-            y=y,
-            X_env=X_env,
-            X_spatial=X_spatial,
-            cv_col=spatial_fold_col,
-            config=cfg,
-            fold_limit=fold_limit,
-        )
+        feature_key = (cfg.spatial_mode, cfg.spatial_k, cfg.add_missing_indicators, cfg.val_strategy, cfg.y_transform)
+        if feature_key not in fold_cache:
+            X_env, X_spatial = build_feature_matrices(df, cfg)
+            fold_cache[feature_key] = make_fold_data(
+                df, y, X_env, X_spatial, spatial_fold_col, cfg, fold_limit=fold_limit
+            )
+        fold_data = fold_cache[feature_key]
+        metrics = evaluate_config_on_folds(fold_data, cfg, device)
 
         row = {
             **metrics,
             "cName": config_name(class_property, cfg),
             "guild": guild,
-            "feature_set": f"alpha64_{cfg.spatial_mode}_k{cfg.spatial_k}",
+            "feature_set": f"alpha64_{cfg.spatial_mode}_k{cfg.spatial_k}_mi{int(cfg.add_missing_indicators)}_val{cfg.val_strategy}_yt{cfg.y_transform}",
+            "env_arch": cfg.env_arch,
             "env_width": cfg.env_width,
             "env_depth": cfg.env_depth,
             "env_dropout": cfg.env_dropout,
@@ -615,6 +706,9 @@ def main():
             "huber_delta": cfg.huber_delta,
             "huber_mix": cfg.huber_mix,
             "alpha_l2": cfg.alpha_l2,
+            "add_missing_indicators": cfg.add_missing_indicators,
+            "val_strategy": cfg.val_strategy,
+            "y_transform": cfg.y_transform,
             "max_epochs": cfg.max_epochs,
             "patience": cfg.patience,
         }
