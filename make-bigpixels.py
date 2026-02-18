@@ -108,7 +108,10 @@ am = pd.read_csv("data/20260122_arbuscular_mycorrhizal_richness_training_data.cs
 am = pd.concat([am.assign(sample_id=x + am["sample_id"].str[:]) for x in rot_names])
 am_alpha = am.merge(am_alpha2017, on="sample_id")
 am_alpha = am_alpha[["sample_id"] + band_names + list(am.columns[25:])]
-am_alpha.to_csv("data/20260218_arbuscular_mycorrhizal_alphaearth_bigpixels.csv", index=False)
+am_alpha.to_csv(
+    DIRECTORY / ".." / "samples" / "20260218_arbuscular_mycorrhizal_alphaearth_bigpixels.csv",
+    index=False,
+)
 del am_alpha, am_alpha2017
 
 ###################
@@ -131,5 +134,8 @@ em = pd.read_csv("data/20260122_ectomycorrhizal_richness_training_data.csv").mer
 em = pd.concat([em.assign(sample_id=x + em["sample_id"].str[:]) for x in rot_names])
 em_alpha = em.merge(em_alpha2017, on="sample_id")
 em_alpha = em_alpha[["sample_id"] + band_names + list(em.columns[25:])]
-em_alpha.to_csv("data/20260218_ectomycorrhizal_alphaearth_bigpixels.csv", index=False)
+em_alpha.to_csv(
+    DIRECTORY / ".." / "samples" / "20260218_ectomycorrhizal_alphaearth_bigpixels.csv",
+    index=False,
+)
 del em_alpha, em_alpha2017
