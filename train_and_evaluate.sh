@@ -10,6 +10,7 @@ set -e  # Exit on error
 CONDA_BASE=~/miniforge3
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${SCRIPT_DIR}/data"
+BOX_DATA_DIR="${HOME}/Box/dsi-core/11th-hour/spun/samples"
 OUTPUT_DIR="${SCRIPT_DIR}/output"
 FUNCTIONS_DIR="${SCRIPT_DIR}/functions"
 TEMP_DIR="${SCRIPT_DIR}/.temp_cv"
@@ -120,6 +121,7 @@ except ImportError:
         return mean_squared_error(y_true, y_pred, squared=False)
 import multiprocessing
 import sys
+import re
 
 # Get configuration from command line arguments
 guild = sys.argv[1]
@@ -130,97 +132,51 @@ class_property = sys.argv[4]
 print(f"Loading training data from {training_file}...")
 df = pd.read_csv(training_file)
 
-# List of environmental covariates
-covariateList = [
-'CGIAR_PET',
-'CHELSA_BIO_Annual_Mean_Temperature',
-'CHELSA_BIO_Annual_Precipitation',
-'CHELSA_BIO_Max_Temperature_of_Warmest_Month',
-'CHELSA_BIO_Precipitation_Seasonality',
-'ConsensusLandCover_Human_Development_Percentage',
-'EarthEnvTexture_CoOfVar_EVI',
-'EarthEnvTexture_Correlation_EVI',
-'EarthEnvTexture_Homogeneity_EVI',
-'EarthEnvTopoMed_AspectCosine',
-'EarthEnvTopoMed_AspectSine',
-'EarthEnvTopoMed_Elevation',
-'EarthEnvTopoMed_Slope',
-'EarthEnvTopoMed_TopoPositionIndex',
-'EsaCci_BurntAreasProbability',
-'GHS_Population_Density',
-'GlobBiomass_AboveGroundBiomass',
-'MODIS_NPP',
-'SG_Depth_to_bedrock',
-'SG_Sand_Content_005cm',
-'SG_SOC_Content_005cm',
-'SG_Soil_pH_H2O_005cm',
-'plant_diversity',
-'climate_stability_index'
-]
+def build_alphaearth_covariates(columns):
+    """Build and validate the expected 288 AlphaEarth predictor columns."""
+    a_pattern = re.compile(r'^A_(\d+)$')
+    b_pattern = re.compile(r'^B(\d+)_(\d+)$')
+    c_pattern = re.compile(r'^C(\d+)_(\d+)$')
 
-# Project-specific variables (primers, sequencing platforms, etc.)
-if guild == "AM":
-    project_vars = [
-    'sequencing_platform454Roche',
-    'sequencing_platformIllumina',
-    'sample_typerhizosphere_soil',
-    'sample_typesoil',
-    'sample_typetopsoil',
-    'primersAML1_AML2_then_AMV4_5NF_AMDGR',
-    'primersAML1_AML2_then_NS31_AM1',
-    'primersAML1_AML2_then_nu_SSU_0595_5__nu_SSU_0948_3_',
-    'primersAMV4_5F_AMDGR',
-    'primersAMV4_5NF_AMDGR',
-    'primersGeoA2_AML2_then_NS31_AMDGR',
-    'primersGeoA2_NS4_then_NS31_AML2',
-    'primersGlomerWT0_Glomer1536_then_NS31_AM1A_and_GlomerWT0_Glomer1536_then_NS31_AM1B',
-    'primersGlomerWT0_Glomer1536_then_NS31_AM1A__GlomerWT0_Glomer1536_then_NS31_AM1B',
-    'primersNS1_NS4_then_AML1_AML2',
-    'primersNS1_NS4_then_AMV4_5NF_AMDGR',
-    'primersNS1_NS4_then_NS31_AM1',
-    'primersNS1_NS41_then_AML1_AML2',
-    'primersNS31_AM1',
-    'primersNS31_AML2',
-    'primersWANDA_AML2',
-    'area_sampled',
-    'extraction_dna_mass'
-    ]
-else:  # EcM
-    project_vars = [
-    'sequencing_platform454Roche',
-    'sequencing_platformIllumina',
-    'sequencing_platformIonTorrent',
-    'sequencing_platformPacBio',
-    'sample_typerhizosphere_soil',
-    'sample_typesoil',
-    'sample_typetopsoil',
-    'primers5_8S_Fun_ITS4_Fun',
-    'primersfITS7_ITS4',
-    'primersfITS9_ITS4',
-    'primersgITS7_ITS4',
-    'primersgITS7_ITS4_then_ITS9_ITS4',
-    'primersgITS7_ITS4_ITS4arch',
-    'primersgITS7_ITS4m',
-    'primersgITS7_ITS4ngs',
-    'primersgITS7ngs_ITS4ngsUni',
-    'primersITS_S2F___ITS3_mixed_1_1_ITS4',
-    'primersITS1_ITS4',
-    'primersITS1F_ITS4',
-    'primersITS1F_ITS4_then_fITS7_ITS4',
-    'primersITS1F_ITS4_then_ITS3_ITS4',
-    'primersITS1ngs_ITS4ngs_or_ITS1Fngs_ITS4ngs',
-    'primersITS3_KYO2_ITS4',
-    'primersITS3_ITS4',
-    'primersITS3ngs1_to_5___ITS3ngs10_ITS4ngs',
-    'primersITS3ngs1_to_ITS3ngs11_ITS4ngs',
-    'primersITS86F_ITS4',
-    'primersITS9MUNngs_ITS4ngsUni',
-    'area_sampled',
-    'extraction_dna_mass'
-    ]
+    a_covs = sorted(
+        [c for c in columns if a_pattern.fullmatch(c)],
+        key=lambda x: int(a_pattern.fullmatch(x).group(1))
+    )
+    b_covs = sorted(
+        [c for c in columns if b_pattern.fullmatch(c)],
+        key=lambda x: tuple(map(int, b_pattern.fullmatch(x).groups()))
+    )
+    c_covs = sorted(
+        [c for c in columns if c_pattern.fullmatch(c)],
+        key=lambda x: tuple(map(int, c_pattern.fullmatch(x).groups()))
+    )
 
-# Create final list of covariates
-covariateList = covariateList + project_vars
+    expected_a = {f"A_{i}" for i in range(64)}
+    expected_b = {f"B{i}_{j}" for i in range(16) for j in range(7)}
+    expected_c = {f"C{i}_{j}" for i in range(28) for j in range(4)}
+    expected_all = expected_a | expected_b | expected_c
+
+    found_all = set(a_covs) | set(b_covs) | set(c_covs)
+    missing = sorted(expected_all - found_all)
+    extra = sorted(found_all - expected_all)
+
+    if missing:
+        print(f"ERROR: Missing expected AlphaEarth covariates ({len(missing)}).")
+        print(f"First missing columns: {missing[:10]}")
+        sys.exit(1)
+    if extra:
+        print(f"ERROR: Found unexpected A/B/C covariates ({len(extra)}).")
+        print(f"First unexpected columns: {extra[:10]}")
+        sys.exit(1)
+
+    covariates = a_covs + b_covs + c_covs
+    if len(covariates) != 288:
+        print(f"ERROR: Expected 288 AlphaEarth covariates, found {len(covariates)}.")
+        sys.exit(1)
+    return covariates
+
+covariateList = build_alphaearth_covariates(df.columns)
+print(f"Using {len(covariateList)} AlphaEarth covariates.")
 
 # Check for spatial fold column (should have been added by R script)
 spatial_fold_col = None
@@ -385,7 +341,7 @@ echo "######################################"
 echo ""
 
 run_cv "AM" \
-    "${DATA_DIR}/20260122_arbuscular_mycorrhizal_richness_training_data.csv" \
+    "${BOX_DATA_DIR}/20260218_arbuscular_mycorrhizal_alphaearth_bigpixels.csv" \
     "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
     "arbuscular_mycorrhizal_richness"
 
@@ -397,7 +353,7 @@ echo "######################################"
 echo ""
 
 run_cv "EcM" \
-    "${DATA_DIR}/20260122_ectomycorrhizal_richness_training_data.csv" \
+    "${BOX_DATA_DIR}/20260218_ectomycorrhizal_alphaearth_bigpixels.csv" \
     "${DATA_DIR}/filtered_randomPoints_ECM.csv" \
     "ectomycorrhizal_richness"
 
