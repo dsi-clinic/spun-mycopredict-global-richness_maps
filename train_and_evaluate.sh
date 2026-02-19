@@ -125,8 +125,8 @@ import re
 
 # TEMPORARY DEBUG FILTERS
 # Set these to False to restore full-data behavior.
-DEBUG_ONLY_R0_ROWS = True
-DEBUG_EXCLUDE_BC_COVARIATES = True
+DEBUG_ONLY_R0_ROWS = False
+DEBUG_EXCLUDE_BC_COVARIATES = False
 
 # Get configuration from command line arguments
 guild = sys.argv[1]
