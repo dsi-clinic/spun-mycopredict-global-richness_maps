@@ -82,9 +82,9 @@ def to_bigpixels(patches):
     square2x2 = pca(bigpixels[:, 29:45, :] / 2**2)
     square1x1 = pca(bigpixels[:, 45:46, :] / 1**2)
     return np.concatenate([
-        square4x4[:, :, :4].reshape(len(bigpixels), -1),
-        square2x2[:, :, :7].reshape(len(bigpixels), -1),
         square1x1[:, :, :].reshape(len(bigpixels), -1),
+        square2x2[:, :, :7].reshape(len(bigpixels), -1),
+        square4x4[:, :, :4].reshape(len(bigpixels), -1),
     ], axis=1)
 
 
