@@ -258,7 +258,7 @@ if __name__ == '__main__':
     # VPS (variables per split): 48-144 step 24 (12x scaled from prior 4-12 range)
     # LP (min leaf population): 2-12 step 2
     param_grid = {
-        'max_features': list(range(24, 145, 24)),
+        'max_features': list(range(4, 14, 2)),
         'min_samples_leaf': list(range(2, 14, 2))
     }
 
@@ -272,13 +272,14 @@ if __name__ == '__main__':
     results_list = []
 
     # Run grid search for both random and spatial CV
-    for cv_col in ["CV_Fold_Random", spatial_fold_col]:
+    for cv_col in [spatial_fold_col]:
+#    for cv_col in ["CV_Fold_Random", spatial_fold_col]:
         cv_type = "Random" if cv_col == "CV_Fold_Random" else "Spatial"
         print(f"Running {cv_type} cross-validation with column: {cv_col}")
 
         # Use multiprocessing to speed up grid search
         # Adjust number of processes based on available cores
-        n_processes = min(multiprocessing.cpu_count() - 1, 8)
+        n_processes = multiprocessing.cpu_count() - 1
 
         with poolcontext(processes=n_processes) as pool:
             results = pool.map(
@@ -333,18 +334,6 @@ PYEOF
     echo ""
 }
 
-# Process Arbuscular Mycorrhizal (AM) fungi
-echo ""
-echo "######################################"
-echo "# Arbuscular Mycorrhizal (AM) Fungi #"
-echo "######################################"
-echo ""
-
-run_cv "AM" \
-    "${BOX_DATA_DIR}/20260218_arbuscular_mycorrhizal_alphaearth_bigpixels.csv" \
-    "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
-    "arbuscular_mycorrhizal_richness"
-
 # Process Ectomycorrhizal (EcM) fungi
 echo ""
 echo "######################################"
@@ -356,6 +345,18 @@ run_cv "EcM" \
     "${BOX_DATA_DIR}/20260218_ectomycorrhizal_alphaearth_bigpixels.csv" \
     "${DATA_DIR}/filtered_randomPoints_ECM.csv" \
     "ectomycorrhizal_richness"
+
+# Process Arbuscular Mycorrhizal (AM) fungi
+echo ""
+echo "######################################"
+echo "# Arbuscular Mycorrhizal (AM) Fungi #"
+echo "######################################"
+echo ""
+
+run_cv "AM" \
+    "${BOX_DATA_DIR}/20260218_arbuscular_mycorrhizal_alphaearth_bigpixels.csv" \
+    "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
+    "arbuscular_mycorrhizal_richness"
 
 # Print final summary
 echo ""
