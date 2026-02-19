@@ -123,6 +123,11 @@ import multiprocessing
 import sys
 import re
 
+# TEMPORARY DEBUG FILTERS
+# Set these to False to restore full-data behavior.
+DEBUG_ONLY_R0_ROWS = True
+DEBUG_EXCLUDE_BC_COVARIATES = True
+
 # Get configuration from command line arguments
 guild = sys.argv[1]
 training_file = sys.argv[2]
@@ -131,6 +136,18 @@ class_property = sys.argv[4]
 
 print(f"Loading training data from {training_file}...")
 df = pd.read_csv(training_file)
+
+if DEBUG_ONLY_R0_ROWS:
+    if 'sample_id' not in df.columns:
+        print("ERROR: DEBUG_ONLY_R0_ROWS is enabled, but 'sample_id' column is missing.")
+        sys.exit(1)
+    before_rows = len(df)
+    df = df[df['sample_id'].astype(str).str.startswith('r0_')].copy()
+    print(f"DEBUG: filtered to r0_ rows: {before_rows} -> {len(df)}")
+
+if df.empty:
+    print("ERROR: No rows remain after debug filtering.")
+    sys.exit(1)
 
 def build_alphaearth_covariates(columns):
     """Build and validate the expected 288 AlphaEarth predictor columns."""
@@ -150,6 +167,13 @@ def build_alphaearth_covariates(columns):
         [c for c in columns if c_pattern.fullmatch(c)],
         key=lambda x: tuple(map(int, c_pattern.fullmatch(x).groups()))
     )
+
+    if DEBUG_EXCLUDE_BC_COVARIATES:
+        if len(a_covs) != 64:
+            print(f"ERROR: Expected 64 A_* covariates in debug mode, found {len(a_covs)}.")
+            sys.exit(1)
+        print("DEBUG: using A_* covariates only (excluding B*_* and C*_*).")
+        return a_covs
 
     expected_a = {f"A_{i}" for i in range(64)}
     expected_b = {f"B{i}_{j}" for i in range(16) for j in range(7)}
