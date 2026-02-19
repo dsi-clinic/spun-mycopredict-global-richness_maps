@@ -22,8 +22,8 @@ The `train_and_evaluate.sh` script is a driver script that orchestrates the comp
 The script expects the following input files to be present in the `data/` directory:
 
 1. **Training data:**
-   - `data/20250115_arbuscular_mycorrhizal_richness_training_data.csv` - AM fungal richness training data
-   - `data/20250121_ectomycorrhizal_richness_training_data.csv` - EcM fungal richness training data
+   - `data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv` - AM fungal richness training data (AlphaEarth variables only)
+   - `data/20260123_ectomycorrhizal_only_alphaearth_center.csv` - EcM fungal richness training data (AlphaEarth variables only)
 
 2. **Random prediction points (for spatial fold generation):**
    - `data/filtered_randomPoints_AMF.csv` - Random points for AM fungi
@@ -32,31 +32,15 @@ The script expects the following input files to be present in the `data/` direct
 ### Training Data Format
 
 The training data CSV files should contain:
-- Environmental covariates (24 variables):
-  - CGIAR_PET
-  - CHELSA_BIO_Annual_Mean_Temperature
-  - CHELSA_BIO_Annual_Precipitation
-  - CHELSA_BIO_Max_Temperature_of_Warmest_Month
-  - CHELSA_BIO_Precipitation_Seasonality
-  - ConsensusLandCover_Human_Development_Percentage
-  - EarthEnvTexture_CoOfVar_EVI
-  - EarthEnvTexture_Correlation_EVI
-  - EarthEnvTexture_Homogeneity_EVI
-  - EarthEnvTopoMed_AspectCosine
-  - EarthEnvTopoMed_AspectSine
-  - EarthEnvTopoMed_Elevation
-  - EarthEnvTopoMed_Slope
-  - EarthEnvTopoMed_TopoPositionIndex
-  - EsaCci_BurntAreasProbability
-  - GHS_Population_Density
-  - GlobBiomass_AboveGroundBiomass
-  - MODIS_NPP
-  - SG_Depth_to_bedrock
-  - SG_Sand_Content_005cm
-  - SG_SOC_Content_005cm
-  - SG_Soil_pH_H2O_005cm
-  - plant_diversity
-  - climate_stability_index
+- Environmental covariates (64 AlphaEarth variables):
+  - A00, A01, A02, A03, A04, A05, A06, A07, A08, A09
+  - A10, A11, A12, A13, A14, A15, A16, A17, A18, A19
+  - A20, A21, A22, A23, A24, A25, A26, A27, A28, A29
+  - A30, A31, A32, A33, A34, A35, A36, A37, A38, A39
+  - A40, A41, A42, A43, A44, A45, A46, A47, A48, A49
+  - A50, A51, A52, A53, A54, A55, A56, A57, A58, A59
+  - A60, A61, A62, A63
+  - These are AlphaEarth center-pixel features representing learned environmental representations
 
 - Project-specific variables (primers, sequencing platforms, sample types, area_sampled, extraction_dna_mass)
 - Resolve_Biome - Biome classification for stratification
@@ -175,18 +159,18 @@ If you want to force regeneration of spatial CV folds (e.g., to test different K
 1. **Remove the column from your training data:**
    ```bash
    # For AM data
-   cut -d',' -f1-$(head -1 data/20260122_arbuscular_mycorrhizal_richness_training_data.csv | \
+   cut -d',' -f1-$(head -1 data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv | \
      tr ',' '\n' | grep -n "knndmw_CV_folds" | cut -d':' -f1 | \
-     awk '{print $1-1}') data/20260122_arbuscular_mycorrhizal_richness_training_data.csv \
-     > temp.csv && mv temp.csv data/20260122_arbuscular_mycorrhizal_richness_training_data.csv
+     awk '{print $1-1}') data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv \
+     > temp.csv && mv temp.csv data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv
    ```
 
 2. **Or use a Python script:**
    ```python
    import pandas as pd
-   df = pd.read_csv('data/20260122_arbuscular_mycorrhizal_richness_training_data.csv')
+   df = pd.read_csv('data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv')
    df = df.drop(columns=['knndmw_CV_folds'], errors='ignore')
-   df.to_csv('data/20260122_arbuscular_mycorrhizal_richness_training_data.csv', index=False)
+   df.to_csv('data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv', index=False)
    ```
 
 The next run will automatically regenerate the spatial folds and save them back.
