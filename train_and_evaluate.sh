@@ -125,8 +125,9 @@ import re
 
 # TEMPORARY DEBUG FILTERS
 # Set these to False to restore full-data behavior.
-DEBUG_ONLY_R0_ROWS = True
+DEBUG_ONLY_R0_ROWS = False
 DEBUG_EXCLUDE_BC_COVARIATES = False
+DEBUG_INCLUDE_A_AND_B_ONLY = True
 
 # Get configuration from command line arguments
 guild = sys.argv[1]
@@ -167,6 +168,14 @@ def build_alphaearth_covariates(columns):
         [c for c in columns if c_pattern.fullmatch(c)],
         key=lambda x: tuple(map(int, c_pattern.fullmatch(x).groups()))
     )
+
+    if DEBUG_INCLUDE_A_AND_B_ONLY:
+        covariates = a_covs + b_covs
+        if len(a_covs) != 64 or len(b_covs) != 112:
+            print(f"ERROR: Expected 64 A_* and 112 B*_* covariates in A+B mode, found {len(a_covs)} and {len(b_covs)}.")
+            sys.exit(1)
+        print("DEBUG: using A_* and B*_* covariates only (excluding C*_*).")
+        return covariates
 
     if DEBUG_EXCLUDE_BC_COVARIATES:
         if len(a_covs) != 64:
