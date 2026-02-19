@@ -125,7 +125,7 @@ import re
 
 # TEMPORARY DEBUG FILTERS
 # Set these to False to restore full-data behavior.
-DEBUG_ONLY_R0_ROWS = False
+DEBUG_ONLY_R0_ROWS = True
 DEBUG_EXCLUDE_BC_COVARIATES = False
 
 # Get configuration from command line arguments
@@ -351,8 +351,8 @@ if __name__ == '__main__':
     # VPS (variables per split): 48-144 step 24 (12x scaled from prior 4-12 range)
     # LP (min leaf population): 2-12 step 2
     param_grid = {
-        'max_features': [96, 48, 24, 12, 8],
-        'min_samples_leaf': [2, 6, 12],
+        'max_features': [192, 96, 48],
+        'min_samples_leaf': [2, 12, 72],
     }
 
     # Create a list of all combinations of hyperparameters
@@ -372,7 +372,7 @@ if __name__ == '__main__':
 
         # Use multiprocessing to speed up grid search
         # Adjust number of processes based on available cores
-        n_processes = multiprocessing.cpu_count() - 1
+        n_processes = multiprocessing.cpu_count()
 
         with poolcontext(processes=n_processes) as pool:
             results = pool.map(
