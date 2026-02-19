@@ -200,7 +200,76 @@ def build_alphaearth_covariates(columns):
     return covariates
 
 covariateList = build_alphaearth_covariates(df.columns)
-print(f"Using {len(covariateList)} AlphaEarth covariates.")
+
+# Project-specific variables (primers, sequencing platforms, etc.)
+if guild == "AM":
+    project_vars = [
+        'sequencing_platform454Roche',
+        'sequencing_platformIllumina',
+        'sample_typerhizosphere_soil',
+        'sample_typesoil',
+        'sample_typetopsoil',
+        'primersAML1_AML2_then_AMV4_5NF_AMDGR',
+        'primersAML1_AML2_then_NS31_AM1',
+        'primersAML1_AML2_then_nu_SSU_0595_5__nu_SSU_0948_3_',
+        'primersAMV4_5F_AMDGR',
+        'primersAMV4_5NF_AMDGR',
+        'primersGeoA2_AML2_then_NS31_AMDGR',
+        'primersGeoA2_NS4_then_NS31_AML2',
+        'primersGlomerWT0_Glomer1536_then_NS31_AM1A_and_GlomerWT0_Glomer1536_then_NS31_AM1B',
+        'primersGlomerWT0_Glomer1536_then_NS31_AM1A__GlomerWT0_Glomer1536_then_NS31_AM1B',
+        'primersNS1_NS4_then_AML1_AML2',
+        'primersNS1_NS4_then_AMV4_5NF_AMDGR',
+        'primersNS1_NS4_then_NS31_AM1',
+        'primersNS1_NS41_then_AML1_AML2',
+        'primersNS31_AM1',
+        'primersNS31_AML2',
+        'primersWANDA_AML2',
+        'area_sampled',
+        'extraction_dna_mass'
+    ]
+else:  # EcM
+    project_vars = [
+        'sequencing_platform454Roche',
+        'sequencing_platformIllumina',
+        'sequencing_platformIonTorrent',
+        'sequencing_platformPacBio',
+        'sample_typerhizosphere_soil',
+        'sample_typesoil',
+        'sample_typetopsoil',
+        'primers5_8S_Fun_ITS4_Fun',
+        'primersfITS7_ITS4',
+        'primersfITS9_ITS4',
+        'primersgITS7_ITS4',
+        'primersgITS7_ITS4_then_ITS9_ITS4',
+        'primersgITS7_ITS4_ITS4arch',
+        'primersgITS7_ITS4m',
+        'primersgITS7_ITS4ngs',
+        'primersgITS7ngs_ITS4ngsUni',
+        'primersITS_S2F___ITS3_mixed_1_1_ITS4',
+        'primersITS1_ITS4',
+        'primersITS1F_ITS4',
+        'primersITS1F_ITS4_then_fITS7_ITS4',
+        'primersITS1F_ITS4_then_ITS3_ITS4',
+        'primersITS1ngs_ITS4ngs_or_ITS1Fngs_ITS4ngs',
+        'primersITS3_KYO2_ITS4',
+        'primersITS3_ITS4',
+        'primersITS3ngs1_to_5___ITS3ngs10_ITS4ngs',
+        'primersITS3ngs1_to_ITS3ngs11_ITS4ngs',
+        'primersITS86F_ITS4',
+        'primersITS9MUNngs_ITS4ngsUni',
+        'area_sampled',
+        'extraction_dna_mass'
+    ]
+
+missing_project_vars = [col for col in project_vars if col not in df.columns]
+if missing_project_vars:
+    print(f"ERROR: Missing expected project variables ({len(missing_project_vars)}).")
+    print(f"First missing columns: {missing_project_vars[:10]}")
+    sys.exit(1)
+
+covariateList = covariateList + project_vars
+print(f"Using {len(covariateList)} total covariates ({len(covariateList) - len(project_vars)} AlphaEarth + {len(project_vars)} project vars).")
 
 # Check for spatial fold column (should have been added by R script)
 spatial_fold_col = None
