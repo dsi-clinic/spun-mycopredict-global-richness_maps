@@ -10,6 +10,8 @@ EARTH_RADIUS_KM = 6371.0
 DISTANCE_CUT, AM_OUTPUT, EM_OUTPUT = sys.argv[1:]
 DISTANCE_CUT = float(DISTANCE_CUT)
 
+print(f"Running {DISTANCE_CUT} {AM_OUTPUT} {EM_OUTPUT}")
+
 am = pd.read_csv("data/20260122_arbuscular_mycorrhizal_richness_training_data.csv")
 if "longitude" in am.columns:
     longitude = am["longitude"]
