@@ -6,6 +6,15 @@
 
 set -e  # Exit on error
 
+# Command-line arguments
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 <am_training_file> <em_training_file> <results_file>"
+    exit 1
+fi
+AM_TRAINING_FILE="$1"
+EM_TRAINING_FILE="$2"
+RESULTS_FILE="$3"
+
 # Configuration
 CONDA_BASE=~/miniforge3
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
