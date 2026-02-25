@@ -14,6 +14,7 @@ fi
 AM_TRAINING_FILE="$1"
 EM_TRAINING_FILE="$2"
 RESULTS_FILE="$3"
+echo "Running $1 $2 $3"
 
 # Configuration
 CONDA_BASE=~/miniforge3
