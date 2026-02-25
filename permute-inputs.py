@@ -11,7 +11,6 @@ DISTANCE_CUT, AM_OUTPUT, EM_OUTPUT = sys.argv[1:]
 DISTANCE_CUT = float(DISTANCE_CUT)
 
 am = pd.read_csv("data/20260122_arbuscular_mycorrhizal_richness_training_data.csv")
-am.drop(columns=["CV_Fold_Spatial", "knndmw_CV_folds"], inplace=True)
 if "longitude" in am.columns:
     longitude = am["longitude"]
     latitude = am["latitude"]
@@ -32,7 +31,6 @@ am.to_csv(AM_OUTPUT, index=False)
 del am, longitude, latitude, am_distances, original_features, random_features, i, j
 
 em = pd.read_csv("data/20260122_ectomycorrhizal_richness_training_data.csv")
-em.drop(columns=["knndmw_CV_folds"], inplace=True)
 if "longitude" in em.columns:
     longitude = em["longitude"]
     latitude = em["latitude"]
