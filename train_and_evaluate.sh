@@ -285,8 +285,8 @@ if __name__ == '__main__':
     # VPS (variables per split): 4-12 step 2
     # LP (min leaf population): 2-12 step 2
     param_grid = {
-        'max_features': list(range(4, 14, 2)),
-        'min_samples_leaf': list(range(2, 14, 2))
+        'max_features': [12],
+        'min_samples_leaf': [2],
     }
 
     # Create a list of all combinations of hyperparameters
@@ -299,8 +299,7 @@ if __name__ == '__main__':
     results_list = []
 
     # Run grid search for both random and spatial CV
-    for cv_col in [spatial_fold_col]:
-#    for cv_col in ["CV_Fold_Random", spatial_fold_col]:
+    for cv_col in ["CV_Fold_Random", spatial_fold_col]:
         cv_type = "Random" if cv_col == "CV_Fold_Random" else "Spatial"
         print(f"Running {cv_type} cross-validation with column: {cv_col}")
 
