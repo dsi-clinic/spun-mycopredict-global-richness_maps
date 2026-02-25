@@ -302,8 +302,8 @@ if __name__ == '__main__':
     # VPS (variables per split): 4-12 step 2
     # LP (min leaf population): 2-12 step 2
     param_grid = {
-        'max_features': list(range(4, 14, 2)),
-        'min_samples_leaf': list(range(2, 14, 2))
+        'max_features': [6],
+        'min_samples_leaf': [4],
     }
 
     # Create a list of all combinations of hyperparameters
