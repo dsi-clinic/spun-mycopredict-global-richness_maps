@@ -224,19 +224,14 @@ else:  # EcM
 # Create final list of covariates
 covariateList = covariateList + project_vars
 
-# Check for spatial fold column (should have been added by R script)
-spatial_fold_col = None
-for col in ['knndmw_CV_folds', 'CV_Fold_Spatial']:
-    if col in df.columns:
-        spatial_fold_col = col
-        break
-
-if spatial_fold_col is None:
-    print("ERROR: No spatial fold column found in training data!")
+# Use random CV only
+cv_col = "CV_Fold_Random"
+if cv_col not in df.columns:
+    print(f"ERROR: No random fold column found in training data: {cv_col}")
     print(f"Available columns: {df.columns.tolist()}")
     sys.exit(1)
 else:
-    print(f"Using spatial fold column: {spatial_fold_col}")
+    print(f"Using random fold column: {cv_col}")
 
 def gridSearch(params, X, y, df, cv_col, nTrees=250, random_seed=42):
     """Perform grid search for a given set of hyperparameters"""
@@ -315,8 +310,8 @@ if __name__ == '__main__':
     print(f"Testing: max_features={param_grid['max_features']}, min_samples_leaf={param_grid['min_samples_leaf']}")
     print("")
 
-    # Run only spatial CV
-    print(f"Running Spatial cross-validation with column: {spatial_fold_col}")
+    # Run only random CV
+    print(f"Running Random cross-validation with column: {cv_col}")
 
     # Use multiprocessing to speed up grid search
     # Adjust number of processes based on available cores
@@ -325,12 +320,12 @@ if __name__ == '__main__':
 
     with poolcontext(processes=n_processes) as pool:
         results_list = pool.map(
-            partial(gridSearch, X=X, y=y, df=df, cv_col=spatial_fold_col),
+            partial(gridSearch, X=X, y=y, df=df, cv_col=cv_col),
             all_params
         )
 
     spatial_df = pd.concat(results_list, ignore_index=True)
-    best_spatial_r2 = float(spatial_df['Mean_R2_Spatial'].max())
+    best_spatial_r2 = float(spatial_df['Mean_R2_Random'].max())
 
     # Emit only the best spatial R2 to stdout for shell capture.
     print(f"{best_spatial_r2:.15g}")
