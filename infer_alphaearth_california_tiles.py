@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import subprocess
+import sys
 import tempfile
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import joblib
@@ -89,6 +91,31 @@ def parse_args() -> argparse.Namespace:
         "--overwrite",
         action="store_true",
         help="Overwrite output files if they already exist.",
+    )
+    parser.add_argument(
+        "--worker-mode",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--input-tiff",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--output-tiff",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--am-model-path",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--ecm-model-path",
+        default="",
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args()
 
@@ -204,8 +231,93 @@ def choose_window_size(ram_ceiling_gb: float, workers: int) -> int:
     return side
 
 
+def is_output_complete(input_tile: Path, output_tile: Path) -> bool:
+    if not output_tile.exists():
+        return False
+    if output_tile.stat().st_size <= 0:
+        return False
+
+    try:
+        with rasterio.open(input_tile) as src_in, rasterio.open(output_tile) as src_out:
+            if src_out.count != 2:
+                return False
+            if src_out.width != src_in.width or src_out.height != src_in.height:
+                return False
+            if src_out.crs != src_in.crs:
+                return False
+            if src_out.transform != src_in.transform:
+                return False
+            if tuple(src_out.dtypes) != ("float32", "float32"):
+                return False
+            if src_out.descriptions != ("am_richness", "ecm_richness"):
+                return False
+
+            # Attempt reads from multiple locations; truncated/in-progress tiles often fail here.
+            sample_windows = [
+                Window(0, 0, 1, 1),
+                Window(max(src_out.width - 1, 0), 0, 1, 1),
+                Window(0, max(src_out.height - 1, 0), 1, 1),
+                Window(max(src_out.width - 1, 0), max(src_out.height - 1, 0), 1, 1),
+                Window(src_out.width // 2, src_out.height // 2, 1, 1),
+            ]
+            for band in (1, 2):
+                for win in sample_windows:
+                    _ = src_out.read(band, window=win)
+    except Exception:
+        return False
+
+    return True
+
+
+def _run_single_tile_subprocess(
+    script_path: Path,
+    input_tile: Path,
+    output_tile: Path,
+    am_model_path: Path,
+    ecm_model_path: Path,
+    window_size: int,
+) -> tuple[str, int]:
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--worker-mode",
+        "--input-tiff",
+        str(input_tile),
+        "--output-tiff",
+        str(output_tile),
+        "--am-model-path",
+        str(am_model_path),
+        "--ecm-model-path",
+        str(ecm_model_path),
+        "--window-size",
+        str(window_size),
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Worker failed for {input_tile} (exit={proc.returncode}). "
+            f"stderr:\n{proc.stderr}\nstdout:\n{proc.stdout}"
+        )
+
+    valid_pixels = -1
+    for line in reversed(proc.stdout.strip().splitlines()):
+        if line.startswith("WORKER_DONE "):
+            try:
+                valid_pixels = int(line.split("valid_pixels=")[1].strip())
+            except Exception:
+                valid_pixels = -1
+            break
+    return str(output_tile), valid_pixels
+
+
 def main() -> int:
     args = parse_args()
+
+    if args.worker_mode:
+        _init_worker(args.am_model_path, args.ecm_model_path)
+        out_path, valid_total = _predict_tile(args.input_tiff, args.output_tiff, args.window_size)
+        print(f"WORKER_DONE output={out_path} valid_pixels={valid_total}")
+        return 0
 
     input_base = Path(args.input_base).resolve()
     output_base = Path(args.output_base).resolve()
@@ -217,14 +329,18 @@ def main() -> int:
         )
 
     jobs: list[tuple[Path, Path]] = []
+    skipped_complete = 0
     for input_tile in input_tiles:
         rel = input_tile.relative_to(input_base)
         output_tile = output_base / rel
-        if output_tile.exists() and not args.overwrite:
+        if not args.overwrite and is_output_complete(input_tile, output_tile):
+            skipped_complete += 1
             continue
         jobs.append((input_tile, output_tile))
 
     print(f"Found {len(input_tiles)} input tiles.")
+    if skipped_complete:
+        print(f"Skipping {skipped_complete} already-complete output tiles.")
     if not jobs:
         print("All outputs already exist; nothing to do.")
         return 0
@@ -255,16 +371,24 @@ def main() -> int:
         joblib.dump(ecm_model, ecm_model_path)
 
         total = len(jobs)
-        print(f"Running inference on {total} tiles with {args.workers} workers...")
+        print(
+            f"Running inference on {total} tiles with {args.workers} workers "
+            "(one subprocess per tile)..."
+        )
 
         completed = 0
-        with ProcessPoolExecutor(
-            max_workers=args.workers,
-            initializer=_init_worker,
-            initargs=(str(am_model_path), str(ecm_model_path)),
-        ) as executor:
+        script_path = Path(__file__).resolve()
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
-                executor.submit(_predict_tile, str(inp), str(out), window_size): (inp, out)
+                executor.submit(
+                    _run_single_tile_subprocess,
+                    script_path,
+                    inp,
+                    out,
+                    am_model_path,
+                    ecm_model_path,
+                    window_size,
+                ): (inp, out)
                 for inp, out in jobs
             }
             for future in as_completed(futures):
