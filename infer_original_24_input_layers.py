@@ -188,6 +188,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--am-model-path",
+        default="",
+        help="Optional pre-trained AM model .joblib. If set, skips AM retraining.",
+    )
+    parser.add_argument(
+        "--ecm-model-path",
+        default="",
+        help="Optional pre-trained EcM model .joblib. If set, skips EcM retraining.",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing output tiles and model artifacts.",
@@ -556,59 +566,75 @@ def main() -> int:
 
     am_training_csv = Path(args.am_training_csv)
     ecm_training_csv = Path(args.ecm_training_csv)
-    am_grid_search_csv = resolve_grid_search_csv(
-        args.am_grid_search_results,
-        "*arbuscular_mycorrhizal_richness_grid_search_results.csv",
-    )
-    ecm_grid_search_csv = resolve_grid_search_csv(
-        args.ecm_grid_search_results,
-        "*ectomycorrhizal_richness_grid_search_results.csv",
-    )
+    external_am_model = Path(args.am_model_path).resolve() if args.am_model_path else None
+    external_ecm_model = Path(args.ecm_model_path).resolve() if args.ecm_model_path else None
+
+    if (external_am_model is None) != (external_ecm_model is None):
+        raise ValueError("Pass both --am-model-path and --ecm-model-path together.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     tiles_dir.mkdir(parents=True, exist_ok=True)
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    am_max_features, am_min_samples_leaf, am_cname, am_score = parse_best_params(am_grid_search_csv)
-    ecm_max_features, ecm_min_samples_leaf, ecm_cname, ecm_score = parse_best_params(ecm_grid_search_csv)
-
-    print(
-        f"AM best spatial-CV model: {am_cname} "
-        f"(Mean_R2_Spatial={am_score:.4f}) from {am_grid_search_csv}"
-    )
-    print(
-        f"EcM best spatial-CV model: {ecm_cname} "
-        f"(Mean_R2_Spatial={ecm_score:.4f}) from {ecm_grid_search_csv}"
-    )
-
-    am_model_path = models_dir / f"am_spatial_best_vps{am_max_features}_lp{am_min_samples_leaf}.joblib"
-    ecm_model_path = models_dir / f"ecm_spatial_best_vps{ecm_max_features}_lp{ecm_min_samples_leaf}.joblib"
-
-    if args.overwrite or not am_model_path.exists():
-        print("Training AM model on full training data...")
-        am_model = train_model(
-            am_training_csv,
-            AM_TARGET,
-            AM_PROJECT_DEFAULTS,
-            am_max_features,
-            am_min_samples_leaf,
-        )
-        joblib.dump(am_model, am_model_path)
+    if external_am_model is not None:
+        if not external_am_model.exists():
+            raise FileNotFoundError(f"AM model not found: {external_am_model}")
+        if not external_ecm_model.exists():
+            raise FileNotFoundError(f"EcM model not found: {external_ecm_model}")
+        am_model_path = external_am_model
+        ecm_model_path = external_ecm_model
+        print(f"Using pre-trained AM model: {am_model_path}")
+        print(f"Using pre-trained EcM model: {ecm_model_path}")
     else:
-        print(f"Reusing existing AM model: {am_model_path}")
-
-    if args.overwrite or not ecm_model_path.exists():
-        print("Training EcM model on full training data...")
-        ecm_model = train_model(
-            ecm_training_csv,
-            ECM_TARGET,
-            ECM_PROJECT_DEFAULTS,
-            ecm_max_features,
-            ecm_min_samples_leaf,
+        am_grid_search_csv = resolve_grid_search_csv(
+            args.am_grid_search_results,
+            "*arbuscular_mycorrhizal_richness_grid_search_results.csv",
         )
-        joblib.dump(ecm_model, ecm_model_path)
-    else:
-        print(f"Reusing existing EcM model: {ecm_model_path}")
+        ecm_grid_search_csv = resolve_grid_search_csv(
+            args.ecm_grid_search_results,
+            "*ectomycorrhizal_richness_grid_search_results.csv",
+        )
+
+        am_max_features, am_min_samples_leaf, am_cname, am_score = parse_best_params(am_grid_search_csv)
+        ecm_max_features, ecm_min_samples_leaf, ecm_cname, ecm_score = parse_best_params(ecm_grid_search_csv)
+
+        print(
+            f"AM best spatial-CV model: {am_cname} "
+            f"(Mean_R2_Spatial={am_score:.4f}) from {am_grid_search_csv}"
+        )
+        print(
+            f"EcM best spatial-CV model: {ecm_cname} "
+            f"(Mean_R2_Spatial={ecm_score:.4f}) from {ecm_grid_search_csv}"
+        )
+
+        am_model_path = models_dir / f"am_spatial_best_vps{am_max_features}_lp{am_min_samples_leaf}.joblib"
+        ecm_model_path = models_dir / f"ecm_spatial_best_vps{ecm_max_features}_lp{ecm_min_samples_leaf}.joblib"
+
+        if args.overwrite or not am_model_path.exists():
+            print("Training AM model on full training data...")
+            am_model = train_model(
+                am_training_csv,
+                AM_TARGET,
+                AM_PROJECT_DEFAULTS,
+                am_max_features,
+                am_min_samples_leaf,
+            )
+            joblib.dump(am_model, am_model_path)
+        else:
+            print(f"Reusing existing AM model: {am_model_path}")
+
+        if args.overwrite or not ecm_model_path.exists():
+            print("Training EcM model on full training data...")
+            ecm_model = train_model(
+                ecm_training_csv,
+                ECM_TARGET,
+                ECM_PROJECT_DEFAULTS,
+                ecm_max_features,
+                ecm_min_samples_leaf,
+            )
+            joblib.dump(ecm_model, ecm_model_path)
+        else:
+            print(f"Reusing existing EcM model: {ecm_model_path}")
 
     with rasterio.open(input_tiff) as src:
         mask_geometry = load_mask_geometry(mask_geojson, src.crs) if mask_geojson is not None else None
