@@ -137,8 +137,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mask-geojson",
-        default="data/california.geojson",
-        help="GeoJSON mask; only windows intersecting this geometry are processed.",
+        default="",
+        help="Optional GeoJSON mask; only windows intersecting this geometry are processed.",
     )
     parser.add_argument(
         "--workers",
@@ -520,7 +520,7 @@ def main() -> int:
     output_dir = Path(args.output_dir).resolve()
     tiles_dir = output_dir / "tiles"
     models_dir = output_dir / "models"
-    mask_geojson = Path(args.mask_geojson)
+    mask_geojson = Path(args.mask_geojson) if args.mask_geojson else None
 
     if args.worker_mode:
         init_worker(
@@ -551,7 +551,7 @@ def main() -> int:
 
     if not input_tiff.exists():
         raise FileNotFoundError(f"Input TIFF not found: {input_tiff}")
-    if not mask_geojson.exists():
+    if mask_geojson is not None and not mask_geojson.exists():
         raise FileNotFoundError(f"Mask GeoJSON not found: {mask_geojson}")
 
     am_training_csv = Path(args.am_training_csv)
@@ -611,7 +611,7 @@ def main() -> int:
         print(f"Reusing existing EcM model: {ecm_model_path}")
 
     with rasterio.open(input_tiff) as src:
-        mask_geometry = load_mask_geometry(mask_geojson, src.crs)
+        mask_geometry = load_mask_geometry(mask_geojson, src.crs) if mask_geojson is not None else None
         if args.window_size > 0:
             window_size = args.window_size
         else:
@@ -636,10 +636,11 @@ def main() -> int:
         skipped_outside_mask = 0
         manifest_rows: list[dict[str, object]] = []
         for window in windows:
-            left, bottom, right, top = rasterio.windows.bounds(window, src.transform)
-            if not mask_geometry.intersects(box(left, bottom, right, top)):
-                skipped_outside_mask += 1
-                continue
+            if mask_geometry is not None:
+                left, bottom, right, top = rasterio.windows.bounds(window, src.transform)
+                if not mask_geometry.intersects(box(left, bottom, right, top)):
+                    skipped_outside_mask += 1
+                    continue
             output_path = tiles_dir / tile_filename(window)
             if not args.overwrite and output_is_complete(output_path, window, src):
                 skipped_existing += 1
@@ -667,7 +668,7 @@ def main() -> int:
 
     if skipped_existing:
         print(f"Skipping {skipped_existing} already-complete output tiles.")
-    if skipped_outside_mask:
+    if skipped_outside_mask and mask_geojson is not None:
         print(f"Skipping {skipped_outside_mask} tiles outside {mask_geojson}.")
     if not tasks:
         manifest_path = write_manifest(output_dir, manifest_rows)
