@@ -16,7 +16,7 @@ Use [`infer_original_24_input_layers.py`](/Users/jpivarski/dsi/spun-mycopredict-
 
 1. Read the best AM and EcM hyperparameters from the spatial cross-validation CSVs produced by `train_and_evaluate.sh`.
 2. Retrain both random forest models on the full 2026 training CSVs.
-3. Run inference against `../original-24-input-layers.tif` in bounded windows.
+3. Run inference against `../original-24-input-layers.tif` in bounded windows, limited to windows intersecting `data/california.geojson`.
 4. Write one 2-band Float32 GeoTIFF per non-empty window, preserving CRS and georeferencing for easy mosaicking.
 
 The main scaling controls are:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import re
@@ -16,7 +17,9 @@ import joblib
 import numpy as np
 import pandas as pd
 import rasterio
+from rasterio.warp import transform_geom
 from rasterio.windows import Window, transform as window_transform
+from shapely.geometry import box, shape
 from sklearn.ensemble import RandomForestRegressor
 
 
@@ -131,6 +134,11 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         default="output/original_24_inference_tiles",
         help="Directory for chunked output GeoTIFFs and model artifacts.",
+    )
+    parser.add_argument(
+        "--mask-geojson",
+        default="data/california.geojson",
+        help="GeoJSON mask; only windows intersecting this geometry are processed.",
     )
     parser.add_argument(
         "--workers",
@@ -298,6 +306,26 @@ def iter_windows(width: int, height: int, window_size: int) -> list[Window]:
     return windows
 
 
+def load_mask_geometry(mask_geojson: Path, dst_crs) -> object:
+    data = json.loads(mask_geojson.read_text())
+
+    if data["type"] == "FeatureCollection":
+        geometries = [feature["geometry"] for feature in data["features"]]
+    elif data["type"] == "Feature":
+        geometries = [data["geometry"]]
+    else:
+        geometries = [data]
+
+    src_crs = "EPSG:4326"
+    if dst_crs and str(dst_crs) != src_crs:
+        geometries = [transform_geom(src_crs, dst_crs, geom) for geom in geometries]
+
+    merged = shape(geometries[0])
+    for geom in geometries[1:]:
+        merged = merged.union(shape(geom))
+    return merged
+
+
 def tile_filename(window: Window) -> str:
     return (
         f"tile_r{int(window.row_off):05d}_c{int(window.col_off):05d}"
@@ -420,7 +448,10 @@ def predict_window(task: tuple[int, int, int, int, str]) -> dict[str, object]:
 
 def write_manifest(output_dir: Path, records: list[dict[str, object]]) -> Path:
     manifest_path = output_dir / "tile_manifest.csv"
-    df = pd.DataFrame(records).sort_values(["row_off", "col_off"]).reset_index(drop=True)
+    columns = ["status", "output_path", "row_off", "col_off", "height", "width", "valid_pixels"]
+    df = pd.DataFrame(records, columns=columns)
+    if not df.empty:
+        df = df.sort_values(["row_off", "col_off"]).reset_index(drop=True)
     df.to_csv(manifest_path, index=False)
     return manifest_path
 
@@ -489,6 +520,7 @@ def main() -> int:
     output_dir = Path(args.output_dir).resolve()
     tiles_dir = output_dir / "tiles"
     models_dir = output_dir / "models"
+    mask_geojson = Path(args.mask_geojson)
 
     if args.worker_mode:
         init_worker(
@@ -519,6 +551,8 @@ def main() -> int:
 
     if not input_tiff.exists():
         raise FileNotFoundError(f"Input TIFF not found: {input_tiff}")
+    if not mask_geojson.exists():
+        raise FileNotFoundError(f"Mask GeoJSON not found: {mask_geojson}")
 
     am_training_csv = Path(args.am_training_csv)
     ecm_training_csv = Path(args.ecm_training_csv)
@@ -577,6 +611,7 @@ def main() -> int:
         print(f"Reusing existing EcM model: {ecm_model_path}")
 
     with rasterio.open(input_tiff) as src:
+        mask_geometry = load_mask_geometry(mask_geojson, src.crs)
         if args.window_size > 0:
             window_size = args.window_size
         else:
@@ -598,8 +633,13 @@ def main() -> int:
 
         tasks: list[tuple[int, int, int, int, str]] = []
         skipped_existing = 0
+        skipped_outside_mask = 0
         manifest_rows: list[dict[str, object]] = []
         for window in windows:
+            left, bottom, right, top = rasterio.windows.bounds(window, src.transform)
+            if not mask_geometry.intersects(box(left, bottom, right, top)):
+                skipped_outside_mask += 1
+                continue
             output_path = tiles_dir / tile_filename(window)
             if not args.overwrite and output_is_complete(output_path, window, src):
                 skipped_existing += 1
@@ -627,6 +667,8 @@ def main() -> int:
 
     if skipped_existing:
         print(f"Skipping {skipped_existing} already-complete output tiles.")
+    if skipped_outside_mask:
+        print(f"Skipping {skipped_outside_mask} tiles outside {mask_geojson}.")
     if not tasks:
         manifest_path = write_manifest(output_dir, manifest_rows)
         print(f"Nothing to do. Manifest: {manifest_path}")
