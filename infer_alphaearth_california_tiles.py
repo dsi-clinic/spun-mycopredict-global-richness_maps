@@ -23,6 +23,7 @@ import pandas as pd
 import rasterio
 from rasterio.windows import Window
 from sklearn.ensemble import RandomForestRegressor
+from tqdm import tqdm
 
 
 FEATURE_NAMES = [f"A{i:02d}" for i in range(64)]
@@ -179,7 +180,12 @@ def _window_grid(width: int, height: int, window_size: int) -> list[Window]:
     return windows
 
 
-def _predict_tile(input_tiff: str, output_tiff: str, window_size: int) -> tuple[str, int]:
+def _predict_tile(
+    input_tiff: str,
+    output_tiff: str,
+    window_size: int,
+    progress_desc: str | None = None,
+) -> tuple[str, int]:
     global _BAND_INDEXES
 
     input_path = Path(input_tiff)
@@ -192,10 +198,14 @@ def _predict_tile(input_tiff: str, output_tiff: str, window_size: int) -> tuple[
 
         profile = src.profile.copy()
         profile.update(count=2, dtype="float32", nodata=np.nan)
+        windows = _window_grid(src.width, src.height, window_size)
+        window_iter = windows
+        if progress_desc is not None:
+            window_iter = tqdm(windows, desc=progress_desc, unit="window")
 
         with rasterio.open(output_path, "w", **profile) as dst:
             valid_total = 0
-            for win in _window_grid(src.width, src.height, window_size):
+            for win in window_iter:
                 raw_tile_data = src.read(indexes=_BAND_INDEXES, window=win, out_dtype=np.int8)
                 tile_data = _preprocess_alphaearth_bands(raw_tile_data)
                 valid_mask = src.read_masks(1, window=win) > 0
@@ -384,13 +394,30 @@ def main() -> int:
         joblib.dump(ecm_model, ecm_model_path)
 
         total = len(jobs)
+        script_path = Path(__file__).resolve()
+
+        if total == 1:
+            input_tile, output_tile = jobs[0]
+            print(f"Running inference on 1 tile with per-window progress: {input_tile}")
+            global _AM_MODEL, _ECM_MODEL
+            _AM_MODEL = am_model
+            _ECM_MODEL = ecm_model
+            out_path, n_valid = _predict_tile(
+                str(input_tile),
+                str(output_tile),
+                window_size,
+                progress_desc=input_tile.name,
+            )
+            print(f"[1/1] wrote {out_path} (valid pixels: {n_valid})")
+            print("Inference complete.")
+            return 0
+
         print(
             f"Running inference on {total} tiles with {args.workers} workers "
             "(one subprocess per tile)..."
         )
 
         completed = 0
-        script_path = Path(__file__).resolve()
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
                 executor.submit(
