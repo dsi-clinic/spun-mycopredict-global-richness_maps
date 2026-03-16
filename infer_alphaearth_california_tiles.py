@@ -157,6 +157,18 @@ def _init_worker(am_model_path: str, ecm_model_path: str) -> None:
     _ECM_MODEL = joblib.load(ecm_model_path)
 
 
+def _preprocess_alphaearth_bands(tile_data: np.ndarray) -> np.ndarray:
+    if tile_data.shape[0] != len(FEATURE_NAMES):
+        raise ValueError(
+            f"Expected {len(FEATURE_NAMES)} feature bands, got {tile_data.shape[0]}."
+        )
+
+    raw = tile_data.astype(np.float64, copy=False)
+    transformed = ((raw / 127.5) ** 2) * np.sign(raw)
+    transformed[raw == -128] = np.nan
+    return transformed
+
+
 def _window_grid(width: int, height: int, window_size: int) -> list[Window]:
     windows: list[Window] = []
     for row_off in range(0, height, window_size):
@@ -184,7 +196,8 @@ def _predict_tile(input_tiff: str, output_tiff: str, window_size: int) -> tuple[
         with rasterio.open(output_path, "w", **profile) as dst:
             valid_total = 0
             for win in _window_grid(src.width, src.height, window_size):
-                tile_data = src.read(indexes=_BAND_INDEXES, window=win, out_dtype=np.float32)
+                raw_tile_data = src.read(indexes=_BAND_INDEXES, window=win, out_dtype=np.int8)
+                tile_data = _preprocess_alphaearth_bands(raw_tile_data)
                 valid_mask = src.read_masks(1, window=win) > 0
 
                 # Build [n_pixels, n_features] matrix for this window only.
@@ -214,11 +227,11 @@ def _predict_tile(input_tiff: str, output_tiff: str, window_size: int) -> tuple[
 
 def choose_window_size(ram_ceiling_gb: float, workers: int) -> int:
     # Conservative estimate of per-pixel transient memory in bytes while predicting:
-    # - input features window (64 bands float32): 64 * 4
-    # - reshaped/working feature matrix and sklearn internal copies (approx 3x):
-    #   3 * (64 * 4)
+    # - raw input features window (64 bands int8): 64 * 1
+    # - transformed feature matrix and sklearn internal copies (approx 3x float64):
+    #   3 * (64 * 8)
     # - predictions/mask/temporary arrays overhead: ~16
-    bytes_per_pixel = (4 * 64 * 4) + 16  # 1040 bytes/pixel
+    bytes_per_pixel = (64 * 1) + (3 * 64 * 8) + 16  # 1616 bytes/pixel
 
     total_budget_bytes = max(ram_ceiling_gb, 1.0) * (1024**3)
     budget_for_windows = total_budget_bytes * 0.60  # leave headroom for models + Python overhead
