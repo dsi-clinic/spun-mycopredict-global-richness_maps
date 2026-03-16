@@ -34,6 +34,65 @@ ECM_TARGET = "ectomycorrhizal_richness"
 AM_TRAINING_CSV = Path("data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv")
 ECM_TRAINING_CSV = Path("data/20260123_ectomycorrhizal_only_alphaearth_center.csv")
 
+AM_PROJECT_DEFAULTS = {
+    "sequencing_platform454Roche": 0.0,
+    "sequencing_platformIllumina": 1.0,
+    "sample_typerhizosphere_soil": 1.0,
+    "sample_typesoil": 0.0,
+    "sample_typetopsoil": 0.0,
+    "primersAML1_AML2_then_AMV4_5NF_AMDGR": 0.0,
+    "primersAML1_AML2_then_NS31_AM1": 0.0,
+    "primersAML1_AML2_then_nu_SSU_0595_5__nu_SSU_0948_3_": 0.0,
+    "primersAMV4_5F_AMDGR": 0.0,
+    "primersAMV4_5NF_AMDGR": 1.0,
+    "primersGeoA2_AML2_then_NS31_AMDGR": 0.0,
+    "primersGeoA2_NS4_then_NS31_AML2": 0.0,
+    "primersGlomerWT0_Glomer1536_then_NS31_AM1A_and_GlomerWT0_Glomer1536_then_NS31_AM1B": 0.0,
+    "primersGlomerWT0_Glomer1536_then_NS31_AM1A__GlomerWT0_Glomer1536_then_NS31_AM1B": 0.0,
+    "primersNS1_NS4_then_AML1_AML2": 0.0,
+    "primersNS1_NS4_then_AMV4_5NF_AMDGR": 0.0,
+    "primersNS1_NS4_then_NS31_AM1": 0.0,
+    "primersNS1_NS41_then_AML1_AML2": 0.0,
+    "primersNS31_AM1": 0.0,
+    "primersNS31_AML2": 0.0,
+    "primersWANDA_AML2": 0.0,
+    "area_sampled": 100.0,
+    "extraction_dna_mass": 0.5,
+}
+
+ECM_PROJECT_DEFAULTS = {
+    "sequencing_platform454Roche": 0.0,
+    "sequencing_platformIllumina": 1.0,
+    "sequencing_platformIonTorrent": 0.0,
+    "sequencing_platformPacBio": 0.0,
+    "sample_typerhizosphere_soil": 0.0,
+    "sample_typesoil": 1.0,
+    "sample_typetopsoil": 0.0,
+    "primers5_8S_Fun_ITS4_Fun": 0.0,
+    "primersfITS7_ITS4": 0.0,
+    "primersfITS9_ITS4": 0.0,
+    "primersgITS7_ITS4": 0.0,
+    "primersgITS7_ITS4_then_ITS9_ITS4": 0.0,
+    "primersgITS7_ITS4_ITS4arch": 0.0,
+    "primersgITS7_ITS4m": 0.0,
+    "primersgITS7_ITS4ngs": 0.0,
+    "primersgITS7ngs_ITS4ngsUni": 0.0,
+    "primersITS_S2F___ITS3_mixed_1_1_ITS4": 0.0,
+    "primersITS1_ITS4": 0.0,
+    "primersITS1F_ITS4": 0.0,
+    "primersITS1F_ITS4_then_fITS7_ITS4": 0.0,
+    "primersITS1F_ITS4_then_ITS3_ITS4": 0.0,
+    "primersITS1ngs_ITS4ngs_or_ITS1Fngs_ITS4ngs": 0.0,
+    "primersITS3_KYO2_ITS4": 0.0,
+    "primersITS3_ITS4": 1.0,
+    "primersITS3ngs1_to_5___ITS3ngs10_ITS4ngs": 0.0,
+    "primersITS3ngs1_to_ITS3ngs11_ITS4ngs": 0.0,
+    "primersITS86F_ITS4": 0.0,
+    "primersITS9MUNngs_ITS4ngsUni": 0.0,
+    "area_sampled": 100.0,
+    "extraction_dna_mass": 0.5,
+}
+
 BEST_MAX_FEATURES = 6
 BEST_MIN_SAMPLES_LEAF = 4
 
@@ -121,11 +180,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def train_fixed_model(training_csv: Path, target: str) -> RandomForestRegressor:
-    usecols = FEATURE_NAMES + [target]
+def train_fixed_model(
+    training_csv: Path, target: str, project_defaults: dict[str, float] | None = None
+) -> RandomForestRegressor:
+    project_defaults = project_defaults or {}
+    feature_names = FEATURE_NAMES + list(project_defaults)
+    usecols = feature_names + [target]
     df = pd.read_csv(training_csv, usecols=usecols)
 
-    X = df[FEATURE_NAMES].to_numpy(dtype=np.float32, copy=False)
+    X = df[feature_names].copy()
+    for column, value in project_defaults.items():
+        X[column] = X[column].fillna(value)
+
+    X = X.to_numpy(dtype=np.float32, copy=False)
     y = df[target].to_numpy(dtype=np.float32, copy=False)
     valid = np.isfinite(y) & np.isfinite(X).all(axis=1)
 
@@ -219,10 +286,34 @@ def _predict_tile(
                 ecm_pred = np.full(flat.shape[0], np.nan, dtype=np.float32)
                 if np.any(valid_flat):
                     X_valid = flat[valid_flat]
-                    am_pred[valid_flat] = _AM_MODEL.predict(X_valid).astype(
+                    X_valid_am = np.concatenate(
+                        [
+                            X_valid,
+                            np.tile(
+                                np.array(
+                                    list(AM_PROJECT_DEFAULTS.values()), dtype=np.float32
+                                ),
+                                (X_valid.shape[0], 1),
+                            ),
+                        ],
+                        axis=1,
+                    )
+                    X_valid_ecm = np.concatenate(
+                        [
+                            X_valid,
+                            np.tile(
+                                np.array(
+                                    list(ECM_PROJECT_DEFAULTS.values()), dtype=np.float32
+                                ),
+                                (X_valid.shape[0], 1),
+                            ),
+                        ],
+                        axis=1,
+                    )
+                    am_pred[valid_flat] = _AM_MODEL.predict(X_valid_am).astype(
                         np.float32, copy=False
                     )
-                    ecm_pred[valid_flat] = _ECM_MODEL.predict(X_valid).astype(
+                    ecm_pred[valid_flat] = _ECM_MODEL.predict(X_valid_ecm).astype(
                         np.float32, copy=False
                     )
 
@@ -383,8 +474,8 @@ def main() -> int:
     print(
         f"Training AM and EcM models (VPS={BEST_MAX_FEATURES}, LP={BEST_MIN_SAMPLES_LEAF})..."
     )
-    am_model = train_fixed_model(AM_TRAINING_CSV, AM_TARGET)
-    ecm_model = train_fixed_model(ECM_TRAINING_CSV, ECM_TARGET)
+    am_model = train_fixed_model(AM_TRAINING_CSV, AM_TARGET, AM_PROJECT_DEFAULTS)
+    ecm_model = train_fixed_model(ECM_TRAINING_CSV, ECM_TARGET, ECM_PROJECT_DEFAULTS)
     print("Model training complete.")
 
     with tempfile.TemporaryDirectory(prefix="fungal_models_") as tmpdir:
