@@ -9,6 +9,7 @@ input GeoTIFF tile in parallel.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import subprocess
@@ -23,6 +24,7 @@ import pandas as pd
 import rasterio
 from rasterio.windows import Window
 from sklearn.ensemble import RandomForestRegressor
+from shapely.geometry import Point, shape
 from tqdm import tqdm
 
 
@@ -33,6 +35,7 @@ ECM_TARGET = "ectomycorrhizal_richness"
 
 AM_TRAINING_CSV = Path("data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv")
 ECM_TRAINING_CSV = Path("data/20260123_ectomycorrhizal_only_alphaearth_center.csv")
+CALIFORNIA_GEOJSON_DEFAULT = Path("../infer-Original24/data/california.geojson")
 
 AM_PROJECT_DEFAULTS = {
     "sequencing_platform454Roche": 0.0,
@@ -137,6 +140,24 @@ def parse_args() -> argparse.Namespace:
         help="Output path to use with --input-file.",
     )
     parser.add_argument(
+        "--predict-california-training-points",
+        action="store_true",
+        help=(
+            "Predict AM and EcM richness for the 85 California training points and write "
+            "a CSV instead of raster outputs."
+        ),
+    )
+    parser.add_argument(
+        "--california-geojson",
+        default=str(CALIFORNIA_GEOJSON_DEFAULT),
+        help="GeoJSON used to identify California training points.",
+    )
+    parser.add_argument(
+        "--training-point-output-csv",
+        default="output/california_training_point_predictions.csv",
+        help="Output CSV path for --predict-california-training-points.",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=os.cpu_count() or 1,
@@ -219,6 +240,95 @@ def train_fixed_model(
     )
     model.fit(X[valid], y[valid])
     return model
+
+
+def _load_geometry(geojson_path: Path):
+    data = json.loads(geojson_path.read_text())
+    if data["type"] == "FeatureCollection":
+        geometries = [feature["geometry"] for feature in data["features"]]
+    elif data["type"] == "Feature":
+        geometries = [data["geometry"]]
+    else:
+        geometries = [data]
+
+    merged = shape(geometries[0])
+    for geometry in geometries[1:]:
+        merged = merged.union(shape(geometry))
+    return merged
+
+
+def _select_california_rows(df: pd.DataFrame, geometry) -> pd.DataFrame:
+    mask = [
+        geometry.contains(Point(lon, lat)) or geometry.touches(Point(lon, lat))
+        for lon, lat in zip(df["longitude"], df["latitude"])
+    ]
+    return df.loc[mask].copy()
+
+
+def _load_california_training_points(geojson_path: Path) -> pd.DataFrame:
+    geometry = _load_geometry(geojson_path)
+
+    am_usecols = ["sample_id", "longitude", "latitude", "Pixel_Long", "Pixel_Lat"] + FEATURE_NAMES + [AM_TARGET]
+    ecm_usecols = ["sample_id", "longitude", "latitude", "Pixel_Long", "Pixel_Lat"] + FEATURE_NAMES + [ECM_TARGET]
+
+    am_df = pd.read_csv(AM_TRAINING_CSV, usecols=am_usecols)
+    ecm_df = pd.read_csv(ECM_TRAINING_CSV, usecols=ecm_usecols)
+
+    am_points = _select_california_rows(am_df, geometry)
+    am_points["source_guild"] = "AM"
+    am_points[ECM_TARGET] = np.nan
+
+    ecm_points = _select_california_rows(ecm_df, geometry)
+    ecm_points["source_guild"] = "EcM"
+    ecm_points[AM_TARGET] = np.nan
+
+    combined = pd.concat([am_points, ecm_points], ignore_index=True, sort=False)
+    combined = combined[
+        [
+            "sample_id",
+            "source_guild",
+            "longitude",
+            "latitude",
+            "Pixel_Long",
+            "Pixel_Lat",
+            AM_TARGET,
+            ECM_TARGET,
+        ]
+        + FEATURE_NAMES
+    ].sort_values(["source_guild", "sample_id"]).reset_index(drop=True)
+    return combined
+
+
+def _predict_training_points(
+    df: pd.DataFrame,
+    am_model: RandomForestRegressor,
+    ecm_model: RandomForestRegressor,
+) -> pd.DataFrame:
+    out = df.copy()
+
+    am_features = FEATURE_NAMES + list(AM_PROJECT_DEFAULTS)
+    X_am = pd.DataFrame(index=df.index, columns=am_features, dtype=np.float32)
+    X_am[FEATURE_NAMES] = df[FEATURE_NAMES]
+    for column, value in AM_PROJECT_DEFAULTS.items():
+        X_am[column] = value
+    X_am_np = X_am.to_numpy(dtype=np.float32, copy=False)
+    valid_am = np.isfinite(X_am_np).all(axis=1)
+    out["am_prediction"] = np.nan
+    if np.any(valid_am):
+        out.loc[valid_am, "am_prediction"] = am_model.predict(X_am_np[valid_am]).astype(np.float32)
+
+    ecm_features = FEATURE_NAMES + list(ECM_PROJECT_DEFAULTS)
+    X_ecm = pd.DataFrame(index=df.index, columns=ecm_features, dtype=np.float32)
+    X_ecm[FEATURE_NAMES] = df[FEATURE_NAMES]
+    for column, value in ECM_PROJECT_DEFAULTS.items():
+        X_ecm[column] = value
+    X_ecm_np = X_ecm.to_numpy(dtype=np.float32, copy=False)
+    valid_ecm = np.isfinite(X_ecm_np).all(axis=1)
+    out["ecm_prediction"] = np.nan
+    if np.any(valid_ecm):
+        out.loc[valid_ecm, "ecm_prediction"] = ecm_model.predict(X_ecm_np[valid_ecm]).astype(np.float32)
+
+    return out
 
 
 def _resolve_band_indexes(src: rasterio.io.DatasetReader) -> list[int]:
@@ -447,6 +557,28 @@ def main() -> int:
         print(f"WORKER_DONE output={out_path} valid_pixels={valid_total}")
         return 0
 
+    if args.predict_california_training_points and args.input_file:
+        raise ValueError("--predict-california-training-points cannot be combined with --input-file.")
+
+    print(
+        f"Training AM and EcM models (VPS={BEST_MAX_FEATURES}, LP={BEST_MIN_SAMPLES_LEAF})..."
+    )
+    am_model = train_fixed_model(AM_TRAINING_CSV, AM_TARGET, AM_PROJECT_DEFAULTS)
+    ecm_model = train_fixed_model(ECM_TRAINING_CSV, ECM_TARGET, ECM_PROJECT_DEFAULTS)
+    print("Model training complete.")
+
+    if args.predict_california_training_points:
+        california_geojson = Path(args.california_geojson).resolve()
+        if not california_geojson.exists():
+            raise FileNotFoundError(f"California GeoJSON not found: {california_geojson}")
+        out_csv = Path(args.training_point_output_csv).resolve()
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        points = _load_california_training_points(california_geojson)
+        predictions = _predict_training_points(points, am_model, ecm_model)
+        predictions.to_csv(out_csv, index=False)
+        print(f"Wrote {len(predictions)} California training-point predictions to {out_csv}")
+        return 0
+
     jobs: list[tuple[Path, Path]] = []
     if args.input_file:
         if not args.output_file:
@@ -497,13 +629,6 @@ def main() -> int:
         f"(ram ceiling ~{args.ram_ceiling_gb:.1f} GB, workers={args.workers}, "
         f"~{est_windows_per_tile} windows per 8192x8192 tile)."
     )
-
-    print(
-        f"Training AM and EcM models (VPS={BEST_MAX_FEATURES}, LP={BEST_MIN_SAMPLES_LEAF})..."
-    )
-    am_model = train_fixed_model(AM_TRAINING_CSV, AM_TARGET, AM_PROJECT_DEFAULTS)
-    ecm_model = train_fixed_model(ECM_TRAINING_CSV, ECM_TARGET, ECM_PROJECT_DEFAULTS)
-    print("Model training complete.")
 
     with tempfile.TemporaryDirectory(prefix="fungal_models_") as tmpdir:
         am_model_path = Path(tmpdir) / "am_model.joblib"
