@@ -124,6 +124,19 @@ def parse_args() -> argparse.Namespace:
         help="Output base directory that will mirror --input-base (default: %(default)s).",
     )
     parser.add_argument(
+        "--input-file",
+        default="",
+        help=(
+            "Run inference on a single input GeoTIFF instead of mirroring a tile tree. "
+            "Useful for pre-aligned float or int8 AlphaEarth rasters."
+        ),
+    )
+    parser.add_argument(
+        "--output-file",
+        default="",
+        help="Output path to use with --input-file.",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=os.cpu_count() or 1,
@@ -233,7 +246,9 @@ def _preprocess_alphaearth_bands(tile_data: np.ndarray) -> np.ndarray:
 
     raw = tile_data.astype(np.float64, copy=False)
     transformed = ((raw / 127.5) ** 2) * np.sign(raw)
-    transformed[raw == -128] = np.nan
+    transformed[~np.isfinite(raw)] = np.nan
+    if np.issubdtype(tile_data.dtype, np.integer):
+        transformed[raw == -128] = np.nan
     return transformed
 
 
@@ -273,13 +288,12 @@ def _predict_tile(
         with rasterio.open(output_path, "w", **profile) as dst:
             valid_total = 0
             for win in window_iter:
-                raw_tile_data = src.read(indexes=_BAND_INDEXES, window=win, out_dtype=np.int8)
+                raw_tile_data = src.read(indexes=_BAND_INDEXES, window=win)
                 tile_data = _preprocess_alphaearth_bands(raw_tile_data)
-                valid_mask = src.read_masks(1, window=win) > 0
 
                 # Build [n_pixels, n_features] matrix for this window only.
                 flat = np.moveaxis(tile_data, 0, -1).reshape(-1, len(FEATURE_NAMES))
-                valid_flat = valid_mask.reshape(-1) & np.isfinite(flat).all(axis=1)
+                valid_flat = np.isfinite(flat).all(axis=1)
                 valid_total += int(valid_flat.sum())
 
                 am_pred = np.full(flat.shape[0], np.nan, dtype=np.float32)
@@ -433,31 +447,44 @@ def main() -> int:
         print(f"WORKER_DONE output={out_path} valid_pixels={valid_total}")
         return 0
 
-    input_base = Path(args.input_base).resolve()
-    output_base = Path(args.output_base).resolve()
-
-    input_tiles = sorted(input_base.glob(args.input_glob))
-    if not input_tiles:
-        raise FileNotFoundError(
-            f"No input tiles found under {input_base} with pattern {args.input_glob!r}."
-        )
-
     jobs: list[tuple[Path, Path]] = []
-    skipped_complete = 0
-    for input_tile in input_tiles:
-        rel = input_tile.relative_to(input_base)
-        output_tile = output_base / rel
+    if args.input_file:
+        if not args.output_file:
+            raise ValueError("--output-file is required when --input-file is used.")
+        input_tile = Path(args.input_file).resolve()
+        output_tile = Path(args.output_file).resolve()
+        if not input_tile.exists():
+            raise FileNotFoundError(f"Input file not found: {input_tile}")
         if not args.overwrite and is_output_complete(input_tile, output_tile):
-            skipped_complete += 1
-            continue
+            print("Output already exists and appears complete; nothing to do.")
+            return 0
         jobs.append((input_tile, output_tile))
+        print("Running in single-file mode.")
+    else:
+        input_base = Path(args.input_base).resolve()
+        output_base = Path(args.output_base).resolve()
 
-    print(f"Found {len(input_tiles)} input tiles.")
-    if skipped_complete:
-        print(f"Skipping {skipped_complete} already-complete output tiles.")
-    if not jobs:
-        print("All outputs already exist; nothing to do.")
-        return 0
+        input_tiles = sorted(input_base.glob(args.input_glob))
+        if not input_tiles:
+            raise FileNotFoundError(
+                f"No input tiles found under {input_base} with pattern {args.input_glob!r}."
+            )
+
+        skipped_complete = 0
+        for input_tile in input_tiles:
+            rel = input_tile.relative_to(input_base)
+            output_tile = output_base / rel
+            if not args.overwrite and is_output_complete(input_tile, output_tile):
+                skipped_complete += 1
+                continue
+            jobs.append((input_tile, output_tile))
+
+        print(f"Found {len(input_tiles)} input tiles.")
+        if skipped_complete:
+            print(f"Skipping {skipped_complete} already-complete output tiles.")
+        if not jobs:
+            print("All outputs already exist; nothing to do.")
+            return 0
 
     if args.window_size > 0:
         window_size = args.window_size
