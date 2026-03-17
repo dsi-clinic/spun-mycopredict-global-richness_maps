@@ -19,7 +19,7 @@ import pandas as pd
 import rasterio
 from rasterio.warp import transform_geom
 from rasterio.windows import Window, transform as window_transform
-from shapely.geometry import box, shape
+from shapely.geometry import Point, box, shape
 from sklearn.ensemble import RandomForestRegressor
 
 
@@ -202,6 +202,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Overwrite existing output tiles and model artifacts.",
     )
+    parser.add_argument(
+        "--predict-california-training-points",
+        action="store_true",
+        help=(
+            "Predict AM and EcM richness for the 85 California training points and write "
+            "a CSV instead of raster tiles."
+        ),
+    )
+    parser.add_argument(
+        "--california-geojson",
+        default="data/california.geojson",
+        help="GeoJSON used to identify California training points.",
+    )
+    parser.add_argument(
+        "--training-point-output-csv",
+        default="output/california_training_point_predictions.csv",
+        help="Output CSV path for --predict-california-training-points.",
+    )
     parser.add_argument("--worker-mode", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--worker-row-off", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--worker-col-off", type=int, default=0, help=argparse.SUPPRESS)
@@ -258,7 +276,7 @@ def train_model(
 
     y = df[target].to_numpy(dtype=np.float32, copy=False)
     X_np = X.to_numpy(dtype=np.float32, copy=False)
-    valid = np.isfinite(y) & np.isfinite(X_np).all(axis=1)
+    valid = np.isfinite(y)
     if not np.any(valid):
         raise ValueError(f"No finite training rows available in {training_csv} for {target}.")
 
@@ -272,6 +290,78 @@ def train_model(
     )
     model.fit(X_np[valid], y[valid])
     return model
+
+
+def select_points_in_geometry(df: pd.DataFrame, geometry, lon_col: str, lat_col: str) -> pd.DataFrame:
+    mask = [
+        geometry.contains(Point(lon, lat)) or geometry.touches(Point(lon, lat))
+        for lon, lat in zip(df[lon_col], df[lat_col])
+    ]
+    return df.loc[mask].copy()
+
+
+def load_california_training_points(
+    am_training_csv: Path,
+    ecm_training_csv: Path,
+    california_geojson: Path,
+) -> pd.DataFrame:
+    geometry = load_mask_geometry(california_geojson, None)
+
+    am_usecols = ["sample_id", "Pixel_Long", "Pixel_Lat"] + ENV_FEATURES + [AM_TARGET]
+    ecm_usecols = ["sample_id", "Pixel_Long", "Pixel_Lat"] + ENV_FEATURES + [ECM_TARGET]
+
+    am_df = pd.read_csv(am_training_csv, usecols=am_usecols)
+    ecm_df = pd.read_csv(ecm_training_csv, usecols=ecm_usecols)
+
+    am_points = select_points_in_geometry(am_df, geometry, "Pixel_Long", "Pixel_Lat")
+    am_points["source_guild"] = "AM"
+    am_points[ECM_TARGET] = np.nan
+
+    ecm_points = select_points_in_geometry(ecm_df, geometry, "Pixel_Long", "Pixel_Lat")
+    ecm_points["source_guild"] = "EcM"
+    ecm_points[AM_TARGET] = np.nan
+
+    combined = pd.concat([am_points, ecm_points], ignore_index=True, sort=False)
+    combined = combined[
+        [
+            "sample_id",
+            "source_guild",
+            "Pixel_Long",
+            "Pixel_Lat",
+            AM_TARGET,
+            ECM_TARGET,
+        ]
+        + ENV_FEATURES
+    ].sort_values(["source_guild", "sample_id"]).reset_index(drop=True)
+    return combined
+
+
+def predict_training_points(
+    df: pd.DataFrame,
+    am_model: RandomForestRegressor,
+    ecm_model: RandomForestRegressor,
+) -> pd.DataFrame:
+    out = df.copy()
+
+    am_features = ENV_FEATURES + list(AM_PROJECT_DEFAULTS)
+    X_am = pd.DataFrame(index=df.index, columns=am_features, dtype=np.float32)
+    X_am[ENV_FEATURES] = df[ENV_FEATURES]
+    for column, value in AM_PROJECT_DEFAULTS.items():
+        X_am[column] = value
+    X_am_np = X_am.to_numpy(dtype=np.float32, copy=False)
+    out["am_prediction"] = np.nan
+    out["am_prediction"] = am_model.predict(X_am_np).astype(np.float32)
+
+    ecm_features = ENV_FEATURES + list(ECM_PROJECT_DEFAULTS)
+    X_ecm = pd.DataFrame(index=df.index, columns=ecm_features, dtype=np.float32)
+    X_ecm[ENV_FEATURES] = df[ENV_FEATURES]
+    for column, value in ECM_PROJECT_DEFAULTS.items():
+        X_ecm[column] = value
+    X_ecm_np = X_ecm.to_numpy(dtype=np.float32, copy=False)
+    out["ecm_prediction"] = np.nan
+    out["ecm_prediction"] = ecm_model.predict(X_ecm_np).astype(np.float32)
+
+    return out
 
 
 def choose_window_size(ram_ceiling_gb: float, workers: int, n_features: int) -> int:
@@ -386,8 +476,8 @@ def predict_window(task: tuple[int, int, int, int, str]) -> dict[str, object]:
 
     data = _SRC.read(indexes=_BAND_INDEXES, window=window, out_dtype=np.float32)
     flat_env = np.moveaxis(data, 0, -1).reshape(-1, len(ENV_FEATURES))
-    valid = np.isfinite(flat_env).all(axis=1)
-    valid_pixels = int(valid.sum())
+    all_nan = np.isnan(flat_env).all(axis=1)
+    valid_pixels = int((~all_nan).sum())
 
     if valid_pixels == 0:
         return {
@@ -402,7 +492,7 @@ def predict_window(task: tuple[int, int, int, int, str]) -> dict[str, object]:
 
     am_pred = np.full(flat_env.shape[0], np.nan, dtype=np.float32)
     ecm_pred = np.full(flat_env.shape[0], np.nan, dtype=np.float32)
-    valid_env = flat_env[valid]
+    valid_env = flat_env[~all_nan]
 
     X_am_valid = np.empty(
         (valid_pixels, len(ENV_FEATURES) + len(AM_PROJECT_DEFAULTS)),
@@ -420,8 +510,8 @@ def predict_window(task: tuple[int, int, int, int, str]) -> dict[str, object]:
     for idx, value in enumerate(ECM_PROJECT_DEFAULTS.values(), start=len(ENV_FEATURES)):
         X_ecm_valid[:, idx] = value
 
-    am_pred[valid] = _AM_MODEL.predict(X_am_valid).astype(np.float32, copy=False)
-    ecm_pred[valid] = _ECM_MODEL.predict(X_ecm_valid).astype(np.float32, copy=False)
+    am_pred[~all_nan] = _AM_MODEL.predict(X_am_valid).astype(np.float32, copy=False)
+    ecm_pred[~all_nan] = _ECM_MODEL.predict(X_ecm_valid).astype(np.float32, copy=False)
 
     profile = _SRC.profile.copy()
     profile.update(
@@ -559,8 +649,6 @@ def main() -> int:
         )
         return 0
 
-    if not input_tiff.exists():
-        raise FileNotFoundError(f"Input TIFF not found: {input_tiff}")
     if mask_geojson is not None and not mask_geojson.exists():
         raise FileNotFoundError(f"Mask GeoJSON not found: {mask_geojson}")
 
@@ -635,6 +723,23 @@ def main() -> int:
             joblib.dump(ecm_model, ecm_model_path)
         else:
             print(f"Reusing existing EcM model: {ecm_model_path}")
+
+    if args.predict_california_training_points:
+        california_geojson = Path(args.california_geojson).resolve()
+        if not california_geojson.exists():
+            raise FileNotFoundError(f"California GeoJSON not found: {california_geojson}")
+        out_csv = Path(args.training_point_output_csv).resolve()
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        am_model = joblib.load(am_model_path)
+        ecm_model = joblib.load(ecm_model_path)
+        points = load_california_training_points(am_training_csv, ecm_training_csv, california_geojson)
+        predictions = predict_training_points(points, am_model, ecm_model)
+        predictions.to_csv(out_csv, index=False)
+        print(f"Wrote {len(predictions)} California training-point predictions to {out_csv}")
+        return 0
+
+    if not input_tiff.exists():
+        raise FileNotFoundError(f"Input TIFF not found: {input_tiff}")
 
     with rasterio.open(input_tiff) as src:
         mask_geometry = load_mask_geometry(mask_geojson, src.crs) if mask_geojson is not None else None
