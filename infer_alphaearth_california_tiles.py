@@ -1,0 +1,687 @@
+#!/usr/bin/env python3
+"""Inference-only tile prediction for AM and EcM fungal richness.
+
+This script trains two fixed-hyperparameter RandomForest models on the
+AlphaEarth-centered training CSVs, then predicts AM/EcM richness for each
+input GeoTIFF tile in parallel.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+import rasterio
+from rasterio.windows import Window
+from sklearn.ensemble import RandomForestRegressor
+from shapely.geometry import Point, shape
+from tqdm import tqdm
+
+
+FEATURE_NAMES = [f"A{i:02d}" for i in range(64)]
+
+AM_TARGET = "arbuscular_mycorrhizal_richness"
+ECM_TARGET = "ectomycorrhizal_richness"
+
+AM_TRAINING_CSV = Path("data/20260123_arbuscular_mycorrhizal_only_alphaearth_center.csv")
+ECM_TRAINING_CSV = Path("data/20260123_ectomycorrhizal_only_alphaearth_center.csv")
+CALIFORNIA_GEOJSON_DEFAULT = Path("../infer-Original24/data/california.geojson")
+
+AM_PROJECT_DEFAULTS = {
+    "sequencing_platform454Roche": 0.0,
+    "sequencing_platformIllumina": 1.0,
+    "sample_typerhizosphere_soil": 1.0,
+    "sample_typesoil": 0.0,
+    "sample_typetopsoil": 0.0,
+    "primersAML1_AML2_then_AMV4_5NF_AMDGR": 0.0,
+    "primersAML1_AML2_then_NS31_AM1": 0.0,
+    "primersAML1_AML2_then_nu_SSU_0595_5__nu_SSU_0948_3_": 0.0,
+    "primersAMV4_5F_AMDGR": 0.0,
+    "primersAMV4_5NF_AMDGR": 1.0,
+    "primersGeoA2_AML2_then_NS31_AMDGR": 0.0,
+    "primersGeoA2_NS4_then_NS31_AML2": 0.0,
+    "primersGlomerWT0_Glomer1536_then_NS31_AM1A_and_GlomerWT0_Glomer1536_then_NS31_AM1B": 0.0,
+    "primersGlomerWT0_Glomer1536_then_NS31_AM1A__GlomerWT0_Glomer1536_then_NS31_AM1B": 0.0,
+    "primersNS1_NS4_then_AML1_AML2": 0.0,
+    "primersNS1_NS4_then_AMV4_5NF_AMDGR": 0.0,
+    "primersNS1_NS4_then_NS31_AM1": 0.0,
+    "primersNS1_NS41_then_AML1_AML2": 0.0,
+    "primersNS31_AM1": 0.0,
+    "primersNS31_AML2": 0.0,
+    "primersWANDA_AML2": 0.0,
+    "area_sampled": 100.0,
+    "extraction_dna_mass": 0.5,
+}
+
+ECM_PROJECT_DEFAULTS = {
+    "sequencing_platform454Roche": 0.0,
+    "sequencing_platformIllumina": 1.0,
+    "sequencing_platformIonTorrent": 0.0,
+    "sequencing_platformPacBio": 0.0,
+    "sample_typerhizosphere_soil": 0.0,
+    "sample_typesoil": 1.0,
+    "sample_typetopsoil": 0.0,
+    "primers5_8S_Fun_ITS4_Fun": 0.0,
+    "primersfITS7_ITS4": 0.0,
+    "primersfITS9_ITS4": 0.0,
+    "primersgITS7_ITS4": 0.0,
+    "primersgITS7_ITS4_then_ITS9_ITS4": 0.0,
+    "primersgITS7_ITS4_ITS4arch": 0.0,
+    "primersgITS7_ITS4m": 0.0,
+    "primersgITS7_ITS4ngs": 0.0,
+    "primersgITS7ngs_ITS4ngsUni": 0.0,
+    "primersITS_S2F___ITS3_mixed_1_1_ITS4": 0.0,
+    "primersITS1_ITS4": 0.0,
+    "primersITS1F_ITS4": 0.0,
+    "primersITS1F_ITS4_then_fITS7_ITS4": 0.0,
+    "primersITS1F_ITS4_then_ITS3_ITS4": 0.0,
+    "primersITS1ngs_ITS4ngs_or_ITS1Fngs_ITS4ngs": 0.0,
+    "primersITS3_KYO2_ITS4": 0.0,
+    "primersITS3_ITS4": 1.0,
+    "primersITS3ngs1_to_5___ITS3ngs10_ITS4ngs": 0.0,
+    "primersITS3ngs1_to_ITS3ngs11_ITS4ngs": 0.0,
+    "primersITS86F_ITS4": 0.0,
+    "primersITS9MUNngs_ITS4ngsUni": 0.0,
+    "area_sampled": 100.0,
+    "extraction_dna_mass": 0.5,
+}
+
+BEST_MAX_FEATURES = 6
+BEST_MIN_SAMPLES_LEAF = 4
+
+_AM_MODEL = None
+_ECM_MODEL = None
+_BAND_INDEXES = None
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Predict AM/EcM richness for AlphaEarth California tiles and write "
+            "2-band GeoTIFF outputs with mirrored directory structure."
+        )
+    )
+    parser.add_argument(
+        "--input-base",
+        default="../spun-mycopredict-global/data/alpha_earth_california_2017",
+        help="Base directory to mirror from (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--input-glob",
+        default="raw_tiles/2017/*/*.tiff",
+        help="Glob pattern relative to --input-base (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--output-base",
+        default="data/alpha_earth_california_2017",
+        help="Output base directory that will mirror --input-base (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--input-file",
+        default="",
+        help=(
+            "Run inference on a single input GeoTIFF instead of mirroring a tile tree. "
+            "Useful for pre-aligned float or int8 AlphaEarth rasters."
+        ),
+    )
+    parser.add_argument(
+        "--output-file",
+        default="",
+        help="Output path to use with --input-file.",
+    )
+    parser.add_argument(
+        "--predict-california-training-points",
+        action="store_true",
+        help=(
+            "Predict AM and EcM richness for the 85 California training points and write "
+            "a CSV instead of raster outputs."
+        ),
+    )
+    parser.add_argument(
+        "--california-geojson",
+        default=str(CALIFORNIA_GEOJSON_DEFAULT),
+        help="GeoJSON used to identify California training points.",
+    )
+    parser.add_argument(
+        "--training-point-output-csv",
+        default="output/california_training_point_predictions.csv",
+        help="Output CSV path for --predict-california-training-points.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 1,
+        help="Number of parallel workers (default: CPU count).",
+    )
+    parser.add_argument(
+        "--ram-ceiling-gb",
+        type=float,
+        default=50.0,
+        help=(
+            "Approximate total RAM ceiling (GB) used to auto-pick window size "
+            "across all workers (default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--window-size",
+        type=int,
+        default=0,
+        help=(
+            "Window width/height in pixels. If > 0, overrides auto sizing from "
+            "--ram-ceiling-gb."
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite output files if they already exist.",
+    )
+    parser.add_argument(
+        "--worker-mode",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--input-tiff",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--output-tiff",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--am-model-path",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--ecm-model-path",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    return parser.parse_args()
+
+
+def train_fixed_model(
+    training_csv: Path, target: str, project_defaults: dict[str, float] | None = None
+) -> RandomForestRegressor:
+    project_defaults = project_defaults or {}
+    feature_names = FEATURE_NAMES + list(project_defaults)
+    usecols = feature_names + [target]
+    df = pd.read_csv(training_csv, usecols=usecols)
+
+    X = df[feature_names].copy()
+    for column, value in project_defaults.items():
+        X[column] = X[column].fillna(value)
+
+    X = X.to_numpy(dtype=np.float32, copy=False)
+    y = df[target].to_numpy(dtype=np.float32, copy=False)
+    valid = np.isfinite(y) & np.isfinite(X).all(axis=1)
+
+    model = RandomForestRegressor(
+        n_estimators=250,
+        random_state=42,
+        max_features=BEST_MAX_FEATURES,
+        min_samples_leaf=BEST_MIN_SAMPLES_LEAF,
+        max_samples=0.632,
+        n_jobs=1,
+    )
+    model.fit(X[valid], y[valid])
+    return model
+
+
+def _load_geometry(geojson_path: Path):
+    data = json.loads(geojson_path.read_text())
+    if data["type"] == "FeatureCollection":
+        geometries = [feature["geometry"] for feature in data["features"]]
+    elif data["type"] == "Feature":
+        geometries = [data["geometry"]]
+    else:
+        geometries = [data]
+
+    merged = shape(geometries[0])
+    for geometry in geometries[1:]:
+        merged = merged.union(shape(geometry))
+    return merged
+
+
+def _select_california_rows(df: pd.DataFrame, geometry) -> pd.DataFrame:
+    mask = [
+        geometry.contains(Point(lon, lat)) or geometry.touches(Point(lon, lat))
+        for lon, lat in zip(df["longitude"], df["latitude"])
+    ]
+    return df.loc[mask].copy()
+
+
+def _load_california_training_points(geojson_path: Path) -> pd.DataFrame:
+    geometry = _load_geometry(geojson_path)
+
+    am_usecols = ["sample_id", "longitude", "latitude", "Pixel_Long", "Pixel_Lat"] + FEATURE_NAMES + [AM_TARGET]
+    ecm_usecols = ["sample_id", "longitude", "latitude", "Pixel_Long", "Pixel_Lat"] + FEATURE_NAMES + [ECM_TARGET]
+
+    am_df = pd.read_csv(AM_TRAINING_CSV, usecols=am_usecols)
+    ecm_df = pd.read_csv(ECM_TRAINING_CSV, usecols=ecm_usecols)
+
+    am_points = _select_california_rows(am_df, geometry)
+    am_points["source_guild"] = "AM"
+    am_points[ECM_TARGET] = np.nan
+
+    ecm_points = _select_california_rows(ecm_df, geometry)
+    ecm_points["source_guild"] = "EcM"
+    ecm_points[AM_TARGET] = np.nan
+
+    combined = pd.concat([am_points, ecm_points], ignore_index=True, sort=False)
+    combined = combined[
+        [
+            "sample_id",
+            "source_guild",
+            "longitude",
+            "latitude",
+            "Pixel_Long",
+            "Pixel_Lat",
+            AM_TARGET,
+            ECM_TARGET,
+        ]
+        + FEATURE_NAMES
+    ].sort_values(["source_guild", "sample_id"]).reset_index(drop=True)
+    return combined
+
+
+def _predict_training_points(
+    df: pd.DataFrame,
+    am_model: RandomForestRegressor,
+    ecm_model: RandomForestRegressor,
+) -> pd.DataFrame:
+    out = df.copy()
+
+    am_features = FEATURE_NAMES + list(AM_PROJECT_DEFAULTS)
+    X_am = pd.DataFrame(index=df.index, columns=am_features, dtype=np.float32)
+    X_am[FEATURE_NAMES] = df[FEATURE_NAMES]
+    for column, value in AM_PROJECT_DEFAULTS.items():
+        X_am[column] = value
+    X_am_np = X_am.to_numpy(dtype=np.float32, copy=False)
+    valid_am = np.isfinite(X_am_np).all(axis=1)
+    out["am_prediction"] = np.nan
+    if np.any(valid_am):
+        out.loc[valid_am, "am_prediction"] = am_model.predict(X_am_np[valid_am]).astype(np.float32)
+
+    ecm_features = FEATURE_NAMES + list(ECM_PROJECT_DEFAULTS)
+    X_ecm = pd.DataFrame(index=df.index, columns=ecm_features, dtype=np.float32)
+    X_ecm[FEATURE_NAMES] = df[FEATURE_NAMES]
+    for column, value in ECM_PROJECT_DEFAULTS.items():
+        X_ecm[column] = value
+    X_ecm_np = X_ecm.to_numpy(dtype=np.float32, copy=False)
+    valid_ecm = np.isfinite(X_ecm_np).all(axis=1)
+    out["ecm_prediction"] = np.nan
+    if np.any(valid_ecm):
+        out.loc[valid_ecm, "ecm_prediction"] = ecm_model.predict(X_ecm_np[valid_ecm]).astype(np.float32)
+
+    return out
+
+
+def _resolve_band_indexes(src: rasterio.io.DatasetReader) -> list[int]:
+    desc_to_index = {name: i for i, name in enumerate(src.descriptions, start=1) if name}
+    if all(name in desc_to_index for name in FEATURE_NAMES):
+        return [desc_to_index[name] for name in FEATURE_NAMES]
+    if src.count < len(FEATURE_NAMES):
+        raise ValueError(
+            f"Tile has {src.count} bands, expected at least {len(FEATURE_NAMES)}."
+        )
+    return list(range(1, len(FEATURE_NAMES) + 1))
+
+
+def _init_worker(am_model_path: str, ecm_model_path: str) -> None:
+    global _AM_MODEL, _ECM_MODEL
+    _AM_MODEL = joblib.load(am_model_path)
+    _ECM_MODEL = joblib.load(ecm_model_path)
+
+
+def _preprocess_alphaearth_bands(tile_data: np.ndarray) -> np.ndarray:
+    if tile_data.shape[0] != len(FEATURE_NAMES):
+        raise ValueError(
+            f"Expected {len(FEATURE_NAMES)} feature bands, got {tile_data.shape[0]}."
+        )
+
+    raw = tile_data.astype(np.float64, copy=False)
+    transformed = ((raw / 127.5) ** 2) * np.sign(raw)
+    transformed[~np.isfinite(raw)] = np.nan
+    if np.issubdtype(tile_data.dtype, np.integer):
+        transformed[raw == -128] = np.nan
+    return transformed
+
+
+def _window_grid(width: int, height: int, window_size: int) -> list[Window]:
+    windows: list[Window] = []
+    for row_off in range(0, height, window_size):
+        h = min(window_size, height - row_off)
+        for col_off in range(0, width, window_size):
+            w = min(window_size, width - col_off)
+            windows.append(Window(col_off=col_off, row_off=row_off, width=w, height=h))
+    return windows
+
+
+def _predict_tile(
+    input_tiff: str,
+    output_tiff: str,
+    window_size: int,
+    progress_desc: str | None = None,
+) -> tuple[str, int]:
+    global _BAND_INDEXES
+
+    input_path = Path(input_tiff)
+    output_path = Path(output_tiff)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with rasterio.open(input_path) as src:
+        if _BAND_INDEXES is None:
+            _BAND_INDEXES = _resolve_band_indexes(src)
+
+        profile = src.profile.copy()
+        profile.update(count=2, dtype="float32", nodata=np.nan)
+        windows = _window_grid(src.width, src.height, window_size)
+        window_iter = windows
+        if progress_desc is not None:
+            window_iter = tqdm(windows, desc=progress_desc, unit="window")
+
+        with rasterio.open(output_path, "w", **profile) as dst:
+            valid_total = 0
+            for win in window_iter:
+                raw_tile_data = src.read(indexes=_BAND_INDEXES, window=win)
+                tile_data = _preprocess_alphaearth_bands(raw_tile_data)
+
+                # Build [n_pixels, n_features] matrix for this window only.
+                flat = np.moveaxis(tile_data, 0, -1).reshape(-1, len(FEATURE_NAMES))
+                valid_flat = np.isfinite(flat).all(axis=1)
+                valid_total += int(valid_flat.sum())
+
+                am_pred = np.full(flat.shape[0], np.nan, dtype=np.float32)
+                ecm_pred = np.full(flat.shape[0], np.nan, dtype=np.float32)
+                if np.any(valid_flat):
+                    X_valid = flat[valid_flat]
+                    X_valid_am = np.concatenate(
+                        [
+                            X_valid,
+                            np.tile(
+                                np.array(
+                                    list(AM_PROJECT_DEFAULTS.values()), dtype=np.float32
+                                ),
+                                (X_valid.shape[0], 1),
+                            ),
+                        ],
+                        axis=1,
+                    )
+                    X_valid_ecm = np.concatenate(
+                        [
+                            X_valid,
+                            np.tile(
+                                np.array(
+                                    list(ECM_PROJECT_DEFAULTS.values()), dtype=np.float32
+                                ),
+                                (X_valid.shape[0], 1),
+                            ),
+                        ],
+                        axis=1,
+                    )
+                    am_pred[valid_flat] = _AM_MODEL.predict(X_valid_am).astype(
+                        np.float32, copy=False
+                    )
+                    ecm_pred[valid_flat] = _ECM_MODEL.predict(X_valid_ecm).astype(
+                        np.float32, copy=False
+                    )
+
+                dst.write(am_pred.reshape(int(win.height), int(win.width)), 1, window=win)
+                dst.write(ecm_pred.reshape(int(win.height), int(win.width)), 2, window=win)
+
+            dst.set_band_description(1, "am_richness")
+            dst.set_band_description(2, "ecm_richness")
+
+    return str(output_path), valid_total
+
+
+def choose_window_size(ram_ceiling_gb: float, workers: int) -> int:
+    # Conservative estimate of per-pixel transient memory in bytes while predicting:
+    # - raw input features window (64 bands int8): 64 * 1
+    # - transformed feature matrix and sklearn internal copies (approx 3x float64):
+    #   3 * (64 * 8)
+    # - predictions/mask/temporary arrays overhead: ~16
+    bytes_per_pixel = (64 * 1) + (3 * 64 * 8) + 16  # 1616 bytes/pixel
+
+    total_budget_bytes = max(ram_ceiling_gb, 1.0) * (1024**3)
+    budget_for_windows = total_budget_bytes * 0.60  # leave headroom for models + Python overhead
+    per_worker_bytes = budget_for_windows / max(workers, 1)
+    pixels_per_window = max(int(per_worker_bytes / bytes_per_pixel), 1)
+
+    side = int(math.sqrt(pixels_per_window))
+    # Clamp to practical bounds.
+    side = max(256, min(4096, side))
+    return side
+
+
+def is_output_complete(input_tile: Path, output_tile: Path) -> bool:
+    if not output_tile.exists():
+        return False
+    if output_tile.stat().st_size <= 0:
+        return False
+
+    try:
+        with rasterio.open(input_tile) as src_in, rasterio.open(output_tile) as src_out:
+            if src_out.count != 2:
+                return False
+            if src_out.width != src_in.width or src_out.height != src_in.height:
+                return False
+            if src_out.crs != src_in.crs:
+                return False
+            if src_out.transform != src_in.transform:
+                return False
+            if tuple(src_out.dtypes) != ("float32", "float32"):
+                return False
+            if src_out.descriptions != ("am_richness", "ecm_richness"):
+                return False
+
+            # Attempt reads from multiple locations; truncated/in-progress tiles often fail here.
+            sample_windows = [
+                Window(0, 0, 1, 1),
+                Window(max(src_out.width - 1, 0), 0, 1, 1),
+                Window(0, max(src_out.height - 1, 0), 1, 1),
+                Window(max(src_out.width - 1, 0), max(src_out.height - 1, 0), 1, 1),
+                Window(src_out.width // 2, src_out.height // 2, 1, 1),
+            ]
+            for band in (1, 2):
+                for win in sample_windows:
+                    _ = src_out.read(band, window=win)
+    except Exception:
+        return False
+
+    return True
+
+
+def _run_single_tile_subprocess(
+    script_path: Path,
+    input_tile: Path,
+    output_tile: Path,
+    am_model_path: Path,
+    ecm_model_path: Path,
+    window_size: int,
+) -> tuple[str, int]:
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--worker-mode",
+        "--input-tiff",
+        str(input_tile),
+        "--output-tiff",
+        str(output_tile),
+        "--am-model-path",
+        str(am_model_path),
+        "--ecm-model-path",
+        str(ecm_model_path),
+        "--window-size",
+        str(window_size),
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Worker failed for {input_tile} (exit={proc.returncode}). "
+            f"stderr:\n{proc.stderr}\nstdout:\n{proc.stdout}"
+        )
+
+    valid_pixels = -1
+    for line in reversed(proc.stdout.strip().splitlines()):
+        if line.startswith("WORKER_DONE "):
+            try:
+                valid_pixels = int(line.split("valid_pixels=")[1].strip())
+            except Exception:
+                valid_pixels = -1
+            break
+    return str(output_tile), valid_pixels
+
+
+def main() -> int:
+    args = parse_args()
+
+    if args.worker_mode:
+        _init_worker(args.am_model_path, args.ecm_model_path)
+        out_path, valid_total = _predict_tile(args.input_tiff, args.output_tiff, args.window_size)
+        print(f"WORKER_DONE output={out_path} valid_pixels={valid_total}")
+        return 0
+
+    if args.predict_california_training_points and args.input_file:
+        raise ValueError("--predict-california-training-points cannot be combined with --input-file.")
+
+    print(
+        f"Training AM and EcM models (VPS={BEST_MAX_FEATURES}, LP={BEST_MIN_SAMPLES_LEAF})..."
+    )
+    am_model = train_fixed_model(AM_TRAINING_CSV, AM_TARGET, AM_PROJECT_DEFAULTS)
+    ecm_model = train_fixed_model(ECM_TRAINING_CSV, ECM_TARGET, ECM_PROJECT_DEFAULTS)
+    print("Model training complete.")
+
+    if args.predict_california_training_points:
+        california_geojson = Path(args.california_geojson).resolve()
+        if not california_geojson.exists():
+            raise FileNotFoundError(f"California GeoJSON not found: {california_geojson}")
+        out_csv = Path(args.training_point_output_csv).resolve()
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        points = _load_california_training_points(california_geojson)
+        predictions = _predict_training_points(points, am_model, ecm_model)
+        predictions.to_csv(out_csv, index=False)
+        print(f"Wrote {len(predictions)} California training-point predictions to {out_csv}")
+        return 0
+
+    jobs: list[tuple[Path, Path]] = []
+    if args.input_file:
+        if not args.output_file:
+            raise ValueError("--output-file is required when --input-file is used.")
+        input_tile = Path(args.input_file).resolve()
+        output_tile = Path(args.output_file).resolve()
+        if not input_tile.exists():
+            raise FileNotFoundError(f"Input file not found: {input_tile}")
+        if not args.overwrite and is_output_complete(input_tile, output_tile):
+            print("Output already exists and appears complete; nothing to do.")
+            return 0
+        jobs.append((input_tile, output_tile))
+        print("Running in single-file mode.")
+    else:
+        input_base = Path(args.input_base).resolve()
+        output_base = Path(args.output_base).resolve()
+
+        input_tiles = sorted(input_base.glob(args.input_glob))
+        if not input_tiles:
+            raise FileNotFoundError(
+                f"No input tiles found under {input_base} with pattern {args.input_glob!r}."
+            )
+
+        skipped_complete = 0
+        for input_tile in input_tiles:
+            rel = input_tile.relative_to(input_base)
+            output_tile = output_base / rel
+            if not args.overwrite and is_output_complete(input_tile, output_tile):
+                skipped_complete += 1
+                continue
+            jobs.append((input_tile, output_tile))
+
+        print(f"Found {len(input_tiles)} input tiles.")
+        if skipped_complete:
+            print(f"Skipping {skipped_complete} already-complete output tiles.")
+        if not jobs:
+            print("All outputs already exist; nothing to do.")
+            return 0
+
+    if args.window_size > 0:
+        window_size = args.window_size
+    else:
+        window_size = choose_window_size(args.ram_ceiling_gb, args.workers)
+
+    est_windows_per_tile = math.ceil(8192 / window_size) ** 2
+    print(
+        f"Using window size {window_size}x{window_size} pixels "
+        f"(ram ceiling ~{args.ram_ceiling_gb:.1f} GB, workers={args.workers}, "
+        f"~{est_windows_per_tile} windows per 8192x8192 tile)."
+    )
+
+    with tempfile.TemporaryDirectory(prefix="fungal_models_") as tmpdir:
+        am_model_path = Path(tmpdir) / "am_model.joblib"
+        ecm_model_path = Path(tmpdir) / "ecm_model.joblib"
+        joblib.dump(am_model, am_model_path)
+        joblib.dump(ecm_model, ecm_model_path)
+
+        total = len(jobs)
+        script_path = Path(__file__).resolve()
+
+        if total == 1:
+            input_tile, output_tile = jobs[0]
+            print(f"Running inference on 1 tile with per-window progress: {input_tile}")
+            global _AM_MODEL, _ECM_MODEL
+            _AM_MODEL = am_model
+            _ECM_MODEL = ecm_model
+            out_path, n_valid = _predict_tile(
+                str(input_tile),
+                str(output_tile),
+                window_size,
+                progress_desc=input_tile.name,
+            )
+            print(f"[1/1] wrote {out_path} (valid pixels: {n_valid})")
+            print("Inference complete.")
+            return 0
+
+        print(
+            f"Running inference on {total} tiles with {args.workers} workers "
+            "(one subprocess per tile)..."
+        )
+
+        completed = 0
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = {
+                executor.submit(
+                    _run_single_tile_subprocess,
+                    script_path,
+                    inp,
+                    out,
+                    am_model_path,
+                    ecm_model_path,
+                    window_size,
+                ): (inp, out)
+                for inp, out in jobs
+            }
+            for future in as_completed(futures):
+                completed += 1
+                out_path, n_valid = future.result()
+                print(f"[{completed}/{total}] wrote {out_path} (valid pixels: {n_valid})")
+
+    print("Inference complete.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
