@@ -6,6 +6,16 @@
 
 set -e  # Exit on error
 
+# Command-line arguments
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 <am_training_file> <em_training_file> <results_file>"
+    exit 1
+fi
+AM_TRAINING_FILE="$1"
+EM_TRAINING_FILE="$2"
+RESULTS_FILE="$3"
+echo "Running $1 $2 $3"
+
 # Configuration
 CONDA_BASE=~/miniforge3
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,13 +37,6 @@ echo ""
 echo "Cleaning up previous run artifacts..."
 rm -rf "${TEMP_DIR}"
 mkdir -p "${TEMP_DIR}"
-
-# Create output directory if it doesn't exist
-mkdir -p "${OUTPUT_DIR}"
-
-# Remove old grid search results to ensure fresh computation
-# Use find to avoid glob expansion errors when no files exist
-find "${OUTPUT_DIR}" -name "*_grid_search_results.csv" -type f -delete 2>/dev/null || true
 
 echo "Done."
 echo ""
@@ -124,8 +127,7 @@ import sys
 # Get configuration from command line arguments
 guild = sys.argv[1]
 training_file = sys.argv[2]
-output_file = sys.argv[3]
-class_property = sys.argv[4]
+class_property = sys.argv[3]
 
 print(f"Loading training data from {training_file}...")
 df = pd.read_csv(training_file)
@@ -222,19 +224,14 @@ else:  # EcM
 # Create final list of covariates
 covariateList = covariateList + project_vars
 
-# Check for spatial fold column (should have been added by R script)
-spatial_fold_col = None
-for col in ['knndmw_CV_folds', 'CV_Fold_Spatial']:
-    if col in df.columns:
-        spatial_fold_col = col
-        break
-
-if spatial_fold_col is None:
-    print("ERROR: No spatial fold column found in training data!")
+# Use random CV only
+cv_col = "CV_Fold_Random"
+if cv_col not in df.columns:
+    print(f"ERROR: No random fold column found in training data: {cv_col}")
     print(f"Available columns: {df.columns.tolist()}")
     sys.exit(1)
 else:
-    print(f"Using spatial fold column: {spatial_fold_col}")
+    print(f"Using random fold column: {cv_col}")
 
 def gridSearch(params, X, y, df, cv_col, nTrees=250, random_seed=42):
     """Perform grid search for a given set of hyperparameters"""
@@ -302,8 +299,8 @@ if __name__ == '__main__':
     # VPS (variables per split): 4-12 step 2
     # LP (min leaf population): 2-12 step 2
     param_grid = {
-        'max_features': list(range(4, 14, 2)),
-        'min_samples_leaf': list(range(2, 14, 2))
+        'max_features': [6],
+        'min_samples_leaf': [4],
     }
 
     # Create a list of all combinations of hyperparameters
@@ -313,68 +310,40 @@ if __name__ == '__main__':
     print(f"Testing: max_features={param_grid['max_features']}, min_samples_leaf={param_grid['min_samples_leaf']}")
     print("")
 
-    results_list = []
+    # Run only random CV
+    print(f"Running Random cross-validation with column: {cv_col}")
 
-    # Run grid search for both random and spatial CV
-    for cv_col in ["CV_Fold_Random", spatial_fold_col]:
-        cv_type = "Random" if cv_col == "CV_Fold_Random" else "Spatial"
-        print(f"Running {cv_type} cross-validation with column: {cv_col}")
+    # Use multiprocessing to speed up grid search
+    # Adjust number of processes based on available cores
+    n_processes = min(multiprocessing.cpu_count() - 1, 8)
+    n_processes = max(n_processes, 1)
 
-        # Use multiprocessing to speed up grid search
-        # Adjust number of processes based on available cores
-        n_processes = min(multiprocessing.cpu_count() - 1, 8)
+    with poolcontext(processes=n_processes) as pool:
+        results_list = pool.map(
+            partial(gridSearch, X=X, y=y, df=df, cv_col=cv_col),
+            all_params
+        )
 
-        with poolcontext(processes=n_processes) as pool:
-            results = pool.map(
-                partial(gridSearch, X=X, y=y, df=df, cv_col=cv_col),
-                all_params
-            )
-            results_list.extend(results)
+    spatial_df = pd.concat(results_list, ignore_index=True)
+    best_spatial_r2 = float(spatial_df['Mean_R2_Random'].max())
 
-        print("")
-
-    # Combine results from both random and spatial CV
-    print("Merging results from random and spatial CV...")
-
-    # Separate random and spatial results
-    random_results = [r for r in results_list if 'Mean_R2_Random' in r.columns]
-    spatial_results = [r for r in results_list if 'Mean_R2_Spatial' in r.columns]
-
-    # Combine into single dataframes
-    random_df = pd.concat(random_results, ignore_index=True)
-    spatial_df = pd.concat(spatial_results, ignore_index=True)
-
-    # Merge on cName
-    results_df = pd.merge(random_df, spatial_df, on='cName', how='outer')
-
-    # Save to CSV
-    results_df.to_csv(output_file, index=False)
-
-    print(f"Grid search results saved to: {output_file}")
-    print("")
-
-    # Print summary statistics
-    print("Summary of cross-validation results:")
-    print("=" * 60)
-    print(f"Random CV  - Mean R²: {results_df['Mean_R2_Random'].mean():.4f} ± {results_df['Mean_R2_Random'].std():.4f}")
-    print(f"             Best R²: {results_df['Mean_R2_Random'].max():.4f}")
-    print(f"Spatial CV - Mean R²: {results_df['Mean_R2_Spatial'].mean():.4f} ± {results_df['Mean_R2_Spatial'].std():.4f}")
-    print(f"             Best R²: {results_df['Mean_R2_Spatial'].max():.4f}")
-    print("=" * 60)
-    print("")
+    # Emit only the best spatial R2 to stdout for shell capture.
+    print(f"{best_spatial_r2:.15g}")
 
 PYEOF
 
-    # Run the Python grid search script
-    python "${TEMP_DIR}/grid_search_${guild}.py" \
+    # Run the Python grid search script and capture best spatial R2.
+    local best_spatial_r2
+    best_spatial_r2=$(python "${TEMP_DIR}/grid_search_${guild}.py" \
         "${guild}" \
         "${temp_training}" \
-        "${OUTPUT_DIR}/$(date +%Y%m%d)_${class_property}_grid_search_results.csv" \
-        "${class_property}"
+        "${class_property}")
 
     echo ""
-    echo "Cross-validation complete for ${guild}."
+    echo "Spatial cross-validation complete for ${guild}. Best spatial R2: ${best_spatial_r2}"
     echo ""
+
+    echo "${best_spatial_r2}"
 }
 
 # Process Arbuscular Mycorrhizal (AM) fungi
@@ -384,10 +353,10 @@ echo "# Arbuscular Mycorrhizal (AM) Fungi #"
 echo "######################################"
 echo ""
 
-run_cv "AM" \
-    "${DATA_DIR}/20260122_arbuscular_mycorrhizal_richness_training_data.csv" \
+AM_BEST_SPATIAL_R2=$(run_cv "AM" \
+    "${AM_TRAINING_FILE}" \
     "${DATA_DIR}/filtered_randomPoints_AMF.csv" \
-    "arbuscular_mycorrhizal_richness"
+    "arbuscular_mycorrhizal_richness" | tail -n 1)
 
 # Process Ectomycorrhizal (EcM) fungi
 echo ""
@@ -396,10 +365,10 @@ echo "# Ectomycorrhizal (EcM) Fungi       #"
 echo "######################################"
 echo ""
 
-run_cv "EcM" \
-    "${DATA_DIR}/20260122_ectomycorrhizal_richness_training_data.csv" \
+EM_BEST_SPATIAL_R2=$(run_cv "EcM" \
+    "${EM_TRAINING_FILE}" \
     "${DATA_DIR}/filtered_randomPoints_ECM.csv" \
-    "ectomycorrhizal_richness"
+    "ectomycorrhizal_richness" | tail -n 1)
 
 # Print final summary
 echo ""
@@ -407,29 +376,8 @@ echo "=================================="
 echo "All processing complete!"
 echo "=================================="
 echo ""
-echo "Results have been saved to:"
-echo ""
-
-# Find and display the results files
-for guild_type in "arbuscular_mycorrhizal" "ectomycorrhizal"; do
-    result_file="${OUTPUT_DIR}/$(date +%Y%m%d)_${guild_type}_richness_grid_search_results.csv"
-    if [ -f "${result_file}" ]; then
-        echo "  ${guild_type}: ${result_file}"
-
-        # Extract and display the best R² values
-        if command -v python &> /dev/null; then
-            python << PYEOF2
-import pandas as pd
-df = pd.read_csv("${result_file}")
-print("    Random CV  - Best R²: {:.4f} (Mean: {:.4f})".format(
-    df['Mean_R2_Random'].max(), df['Mean_R2_Random'].mean()))
-print("    Spatial CV - Best R²: {:.4f} (Mean: {:.4f})".format(
-    df['Mean_R2_Spatial'].max(), df['Mean_R2_Spatial'].mean()))
-print("")
-PYEOF2
-        fi
-    fi
-done
+printf "%s,%s\n" "${AM_BEST_SPATIAL_R2}" "${EM_BEST_SPATIAL_R2}" > "${RESULTS_FILE}"
+echo "Wrote machine-readable output to: ${RESULTS_FILE}"
 
 # Clean up temporary directory
 echo "Cleaning up temporary files..."
