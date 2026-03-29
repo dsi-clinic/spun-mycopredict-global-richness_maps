@@ -11,3 +11,40 @@ The geospatial modeling approach is divided in several parts, with the respecitv
 3. One-hot encoding. Transforming the project-specific variables from multilevel categorical to binary format.
 4. Modeling pipeline. The actual modeling approach. 
 
+## Chunked GeoTIFF inference
+Use [`infer_original_24_input_layers.py`](/Users/jpivarski/dsi/spun-mycopredict-global-richness_maps/infer_original_24_input_layers.py) to:
+
+1. Read the best AM and EcM hyperparameters from the spatial cross-validation CSVs produced by `train_and_evaluate.sh`.
+2. Retrain both random forest models on the full 2026 training CSVs.
+3. Run inference against `../original-24-input-layers.tif` in bounded windows.
+4. Write one 2-band Float32 GeoTIFF per non-empty window, preserving CRS and georeferencing for easy mosaicking.
+
+The main scaling controls are:
+1. `--workers` for the number of concurrent inference workers.
+2. `--ram-ceiling-gb` for the approximate total memory budget used to choose window size automatically.
+3. `--window-size` if you want to override the automatic chunk size directly.
+4. `--mask-geojson data/california.geojson` if you want to limit processing to California.
+
+## Spatial CV fold models
+Use [`export_spatial_cv_fold_models.py`](/Users/jpivarski/dsi/spun-mycopredict-global-richness_maps/export_spatial_cv_fold_models.py) to save the 10 spatial CV train/test splits and the 10 held-out-fold models for both AM and EcM. Each `fold_XX/` directory contains:
+
+1. `am_model.joblib` and `ecm_model.joblib`
+2. `am_train_points.csv`, `am_test_points.csv`, `ecm_train_points.csv`, `ecm_test_points.csv`
+3. Per-guild metadata JSON files
+
+Example:
+
+```bash
+python export_spatial_cv_fold_models.py --output-dir output/spatial_cv_fold_models
+```
+
+Then run inference for any fold with the saved model pair:
+
+```bash
+python infer_original_24_input_layers.py \
+  --am-model-path output/spatial_cv_fold_models/fold_01/am_model.joblib \
+  --ecm-model-path output/spatial_cv_fold_models/fold_01/ecm_model.joblib \
+  --output-dir output/fold_01_inference \
+  --workers 120 \
+  --ram-ceiling-gb 800
+```
